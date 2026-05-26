@@ -27,6 +27,9 @@
   ];
   const LABEL_FRAME_MIN_ASPECT = 0.42;
   const LABEL_FRAME_MAX_ASPECT = 2.4;
+  const ONLINE_RETURN_LABEL_ASPECT = 1200 / 1800;
+  const ONLINE_RETURN_TOP_TRIM_RATIO = 0;
+  const ONLINE_RETURN_LEFT_PAD_RATIO = 0.12;
   const dashedBorderCache = new WeakMap();
 
   async function detectPdfPages(pages) {
@@ -276,17 +279,22 @@
   async function dashedBorderLabelDetections(pages) {
     const detections = [];
     for (const page of pages) {
-      const rect = detectDashedBorder(page.canvas);
+      const knownOnlineReturnForm = isOnlineReturnAuthorizationSlip(page?.text);
+      const rect = trimKnownDashedBorderForm(detectDashedBorder(page.canvas), page, knownOnlineReturnForm);
       if (!rect) continue;
       const areaRatio = (rect.width * rect.height) / Math.max(1, page.canvas.width * page.canvas.height);
       if (areaRatio < 0.08) continue;
+      let label = await window.LabelExtractorCrop.cropCanvas(page.canvas, rect);
+      if (knownOnlineReturnForm && label.width > label.height) {
+        label = await window.LabelExtractorCrop.rotateDataUrl(label.dataUrl, 90);
+      }
       detections.push({
         confidence: 0.97,
         reason: "dashed-border",
         pageIndex: page.pageIndex,
         pageCount: getPageCount(pages),
         pages,
-        label: await window.LabelExtractorCrop.cropCanvas(page.canvas, rect),
+        label,
         cropRect: rect,
         sourceWidth: page.canvas.width,
         sourceHeight: page.canvas.height,
@@ -294,6 +302,25 @@
       });
     }
     return detections;
+  }
+
+  function trimKnownDashedBorderForm(rect, page, knownOnlineReturnForm) {
+    if (!rect || !knownOnlineReturnForm) return rect;
+
+    const landscapeLabelHeight = Math.round(rect.width * ONLINE_RETURN_LABEL_ASPECT);
+    const trimTop = Math.round(landscapeLabelHeight * ONLINE_RETURN_TOP_TRIM_RATIO);
+    const padBottom = Math.round(landscapeLabelHeight * ONLINE_RETURN_LEFT_PAD_RATIO);
+
+    return {
+      ...rect,
+      y: Math.min(rect.y + trimTop, rect.y + rect.height - 1),
+      height: Math.max(1, Math.min(rect.height - trimTop, landscapeLabelHeight + padBottom))
+    };
+  }
+
+  function isOnlineReturnAuthorizationSlip(text) {
+    const value = String(text || "").toUpperCase();
+    return value.includes("RETURN AUTHORIZATION SLIP");
   }
 
   async function solidBorderLabelDetections(pages) {
