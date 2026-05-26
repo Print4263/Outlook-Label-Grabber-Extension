@@ -6,6 +6,7 @@
   "permissions": [
     "storage",
     "downloads",
+    "contextMenus",
     "sidePanel",
     "windows",
     "scripting",
@@ -16,7 +17,8 @@
     "https://outlook.office365.com/*",
     "https://outlook.live.com/*",
     "https://outlook.microsoft.com/*",
-    "file:///*"
+    "file:///*",
+    "<all_urls>"
   ],
   "background": {
     "service_worker": "background.js"
@@ -31,6 +33,12 @@
       ],
       "js": ["outlook-reader.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["page-label-drag.js"],
+      "run_at": "document_start",
+      "all_frames": true
     }
   ],
   "content_security_policy": {

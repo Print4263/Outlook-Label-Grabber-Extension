@@ -9,6 +9,8 @@ const POPOUT_WIDTH_RATIO = 0.30;
 const POPOUT_MIN_WIDTH = 520;
 const POPOUT_MAX_WIDTH = 760;
 const POPOUT_LAYOUT_STORAGE_KEY = "labelPopoutLayout";
+const SEND_TO_EXTRACTOR_MENU_ID = "send-to-label-extractor";
+const PENDING_CONTEXT_LABEL_KEY = "pendingContextLabel";
 let popoutWindowId = null;
 let popoutOpenPromise = null;
 let popoutLayoutSaveTimer = null;
@@ -214,10 +216,156 @@ async function grabOutlookLabelAttachment(sender) {
   }
 }
 
+function createContextMenus() {
+  if (!chrome.contextMenus?.create) return;
+
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: SEND_TO_EXTRACTOR_MENU_ID,
+      title: "Send to Label Extractor",
+      contexts: ["image", "link", "frame"]
+    });
+  });
+}
+
+function contextLabelUrl(info) {
+  return info?.linkUrl || info?.srcUrl || info?.frameUrl || "";
+}
+
+function filenameFromUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const name = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() || "");
+    return name || "sent-label";
+  } catch (_) {
+    return "sent-label";
+  }
+}
+
+async function sendContextLabelToExtractor(info, tab) {
+  const url = contextLabelUrl(info);
+  if (!url) return;
+
+  let pending = {
+    url,
+    name: filenameFromUrl(url),
+    createdAt: Date.now()
+  };
+
+  if (/^blob:/i.test(url)) {
+    pending = await resolveBlobContextLabel(info, tab, url);
+  }
+
+  await chrome.storage.local.set({
+    [PENDING_CONTEXT_LABEL_KEY]: pending
+  });
+  await openOrPositionPopout(tab?.windowId);
+}
+
+async function resolveBlobContextLabel(info, tab, url) {
+  const fallback = {
+    url,
+    name: filenameFromUrl(url),
+    createdAt: Date.now(),
+    error: "That label link is protected by the page. Try dragging it into the extractor, or download it first."
+  };
+
+  if (!tab?.id || !chrome.scripting?.executeScript) return fallback;
+
+  try {
+    const frameId = Number.isInteger(info?.frameId) ? info.frameId : 0;
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, frameIds: [frameId] },
+      func: async (blobUrl, suggestedName) => {
+        const response = await fetch(blobUrl);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(reader.error || new Error("Could not read label data."));
+          reader.readAsDataURL(blob);
+        });
+        return {
+          url: blobUrl,
+          dataUrl,
+          name: suggestedName || "sent-label",
+          type: blob.type || "",
+          createdAt: Date.now()
+        };
+      },
+      args: [url, filenameFromUrl(url)]
+    });
+    return result?.result || fallback;
+  } catch (error) {
+    return {
+      ...fallback,
+      error: error?.message || fallback.error
+    };
+  }
+}
+
+function originFromBlobUrl(url) {
+  const match = String(url || "").match(/^blob:(https?:\/\/[^/]+)/i);
+  return match ? match[1] : "";
+}
+
+async function resolveDroppedBlobLabel(url) {
+  const origin = originFromBlobUrl(url);
+  if (!origin) throw new Error("That protected label link is not tied to a readable page.");
+
+  const tabs = await chrome.tabs.query({});
+  const candidates = tabs.filter((tab) => String(tab.url || "").startsWith(origin));
+  if (!candidates.length) throw new Error("Keep the Outlook/order page open, then drag the label again.");
+
+  for (const tab of candidates) {
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        func: async (blobUrl) => {
+          try {
+            const response = await fetch(blobUrl);
+            if (!response.ok) return null;
+            const blob = await response.blob();
+            const dataUrl = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result);
+              reader.onerror = () => reject(reader.error || new Error("Could not read label data."));
+              reader.readAsDataURL(blob);
+            });
+            return {
+              dataUrl,
+              type: blob.type || "",
+              name: "dragged-label",
+              createdAt: Date.now()
+            };
+          } catch (_) {
+            return null;
+          }
+        },
+        args: [url]
+      });
+      const hit = results.map((result) => result?.result).find((result) => result?.dataUrl);
+      if (hit) return hit;
+    } catch (_) {}
+  }
+
+  throw new Error("Outlook would not release that protected label. Use the Outlook Download Label button or the attachment download menu.");
+}
+
 chrome.runtime.onInstalled.addListener(() => {
+  createContextMenus();
   if (chrome.sidePanel?.setPanelBehavior) {
     chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   }
+});
+
+chrome.runtime.onStartup?.addListener(createContextMenus);
+createContextMenus();
+
+chrome.contextMenus?.onClicked?.addListener((info, tab) => {
+  if (info?.menuItemId !== SEND_TO_EXTRACTOR_MENU_ID) return;
+  sendContextLabelToExtractor(info, tab).catch(() => {});
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -253,6 +401,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ok: false,
         message: error?.message || "Could not ask Outlook for the attachment."
       }));
+    return true;
+  }
+
+  if (message?.type === "resolve-dropped-blob-label") {
+    resolveDroppedBlobLabel(message.url)
+      .then((payload) => sendResponse({ ok: true, payload }))
+      .catch((error) => sendResponse({ ok: false, message: error?.message || "Could not read protected label." }));
     return true;
   }
 

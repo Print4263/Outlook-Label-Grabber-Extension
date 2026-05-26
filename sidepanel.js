@@ -69,6 +69,9 @@ const TRUSTED_LOCAL_CONFIDENCE = 0.90;
 const STALE_DOWNLOAD_MS = 10 * 60 * 1000;
 const NEW_DOWNLOAD_MS = 4 * 60 * 1000;
 const REVIEW_CLEAR_WARNING_DELAY_MS = 70000;
+const PENDING_CONTEXT_LABEL_KEY = "pendingContextLabel";
+const RECENT_DRAGGED_LABEL_KEY = "recentDraggedLabel";
+const RECENT_DRAGGED_LABEL_MAX_AGE_MS = 2 * 60 * 1000;
 
 const els = {
   statusText: document.getElementById("statusText"),
@@ -121,7 +124,8 @@ async function init() {
     "letterLabelPrintLeft",
     "letterLabelPrintTop",
     "labelExtractorPrintMode",
-    "labelDownloadsClearedAt"
+    "labelDownloadsClearedAt",
+    PENDING_CONTEXT_LABEL_KEY
   ]);
   state.printWidth = Number(saved.letterLabelPrintWidth ?? 4);
   state.printLeft = Number(saved.letterLabelPrintLeft ?? 0);
@@ -136,6 +140,7 @@ async function init() {
   setStatus("Ready.");
   loadRecentDownloads();
   startDownloadsPolling();
+  processPendingContextLabel(saved[PENDING_CONTEXT_LABEL_KEY]);
 }
 
 function bindEvents() {
@@ -174,6 +179,12 @@ function bindEvents() {
   });
 
   els.dropZone.addEventListener("drop", handleDrop);
+
+  chrome.storage?.onChanged?.addListener((changes, areaName) => {
+    if (areaName !== "local") return;
+    const pending = changes[PENDING_CONTEXT_LABEL_KEY]?.newValue;
+    if (pending) processPendingContextLabel(pending);
+  });
 }
 
 function toggleUiMode() {
@@ -774,6 +785,98 @@ async function useDownloadedFile(download, options = {}) {
   }
 }
 
+async function processPendingContextLabel(pending) {
+  if (!pending) return;
+
+  await chrome.storage.local.remove(PENDING_CONTEXT_LABEL_KEY).catch(() => {});
+  if (pending.error && !pending.dataUrl) {
+    setStatus(`Could not send label from page: ${pending.error}`, "error");
+    return;
+  }
+
+  if (pending.dataUrl) {
+    await loadContextLabelDataUrl(pending.dataUrl, pending.name, pending.type);
+    return;
+  }
+
+  if (pending.url) await loadContextLabelUrl(pending.url, pending.name);
+}
+
+async function loadContextLabelUrl(url, suggestedName) {
+  if (state.extractionInProgress) {
+    setStatus("Finish the current extraction before sending another label.", "error");
+    return;
+  }
+
+  try {
+    clearDownloadPreview();
+    setStatus("Loading label from page...", "loading");
+    const response = await fetch(url, { credentials: "include" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const contentType = cleanMimeType(response.headers.get("content-type"));
+    const blob = await response.blob();
+    const type = cleanMimeType(blob.type) || contentType || mimeTypeFromName(suggestedName || url);
+    const name = filenameForContextLabel(suggestedName || url, type);
+    const file = new File([blob], name, { type });
+
+    if (!isSupportedFile(file)) {
+      throw new Error("That link did not return a PDF, PNG, JPG, JPEG, or GIF label.");
+    }
+
+    setFile(file);
+    state.activeDownloadId = null;
+    setStatus("Page label loaded. Extracting label...", "loading");
+    await extractSelectedFile();
+  } catch (error) {
+    setStatus(`Could not send label from page: ${error.message}`, "error");
+  }
+}
+
+async function loadContextLabelDataUrl(dataUrl, suggestedName, suggestedType) {
+  if (state.extractionInProgress) {
+    setStatus("Finish the current extraction before sending another label.", "error");
+    return;
+  }
+
+  try {
+    clearDownloadPreview();
+    setStatus("Loading protected label from page...", "loading");
+    const response = await fetch(dataUrl);
+    const blob = await response.blob();
+    const type = cleanMimeType(blob.type) || cleanMimeType(suggestedType) || mimeTypeFromName(suggestedName || "");
+    const name = filenameForContextLabel(suggestedName || "sent-label", type);
+    const file = new File([blob], name, { type });
+
+    if (!isSupportedFile(file)) {
+      throw new Error("That page item did not provide a PDF, PNG, JPG, JPEG, or GIF label.");
+    }
+
+    setFile(file);
+    state.activeDownloadId = null;
+    setStatus("Page label loaded. Extracting label...", "loading");
+    await extractSelectedFile();
+  } catch (error) {
+    setStatus(`Could not send label from page: ${error.message}`, "error");
+  }
+}
+
+function cleanMimeType(value) {
+  return String(value || "").split(";")[0].trim().toLowerCase();
+}
+
+function filenameForContextLabel(value, type) {
+  const raw = basename(value).split(/[?#]/)[0] || "sent-label";
+  const clean = raw.replace(/[<>:"|?*\x00-\x1f]/g, "-") || "sent-label";
+  if (/\.(pdf|png|jpe?g|gif)$/i.test(clean)) return clean;
+
+  if (type === "application/pdf") return `${clean}.pdf`;
+  if (type === "image/png") return `${clean}.png`;
+  if (type === "image/jpeg") return `${clean}.jpg`;
+  if (type === "image/gif") return `${clean}.gif`;
+  return clean;
+}
+
 async function previewDownloadedFile(download) {
   try {
     setStatus("Loading preview...", "loading");
@@ -932,12 +1035,48 @@ function firstDroppedUrl(transfer) {
 }
 
 async function tryDroppedUrl(url) {
-  if (url.startsWith("blob:")) {
-    setStatus("That drag was a protected browser link. Download the label first, then drag the saved PDF/image here.");
+  const recent = await recentDraggedLabelForUrl(url);
+  if (recent?.dataUrl) {
+    await loadContextLabelDataUrl(recent.dataUrl, recent.name, recent.type);
     return;
   }
 
-  setStatus("That drag was a link, not a saved PDF/image. Download the label first, then drag the saved file here.");
+  if (/^blob:/i.test(url)) {
+    await tryResolveDroppedBlobLabel(url);
+    return;
+  }
+
+  await loadContextLabelUrl(url, basename(url));
+}
+
+async function tryResolveDroppedBlobLabel(url) {
+  try {
+    setStatus("Reading protected label from Outlook...", "loading");
+    const response = await chrome.runtime.sendMessage({
+      type: "resolve-dropped-blob-label",
+      url
+    });
+    if (!response?.ok || !response.payload?.dataUrl) {
+      throw new Error(response?.message || "Could not read protected label.");
+    }
+    await loadContextLabelDataUrl(response.payload.dataUrl, response.payload.name, response.payload.type);
+  } catch (error) {
+    setStatus(`Could not read dragged label: ${error.message}`, "error");
+  }
+}
+
+async function recentDraggedLabelForUrl(url) {
+  try {
+    const data = await chrome.storage.local.get(RECENT_DRAGGED_LABEL_KEY);
+    const recent = data[RECENT_DRAGGED_LABEL_KEY];
+    if (!recent?.url && !recent?.dataUrl) return null;
+    if (Date.now() - Number(recent.createdAt || 0) > RECENT_DRAGGED_LABEL_MAX_AGE_MS) return null;
+    if (recent.url && url && recent.url !== url) return null;
+    await chrome.storage.local.remove(RECENT_DRAGGED_LABEL_KEY).catch(() => {});
+    return recent;
+  } catch (_) {
+    return null;
+  }
 }
 
 function isSupportedFile(file) {
