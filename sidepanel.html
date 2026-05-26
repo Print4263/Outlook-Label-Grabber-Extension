@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Domain Expansion: Print Label</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/icon32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="icons/icon16.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <h1><span class="title-kicker">Domain Expansion</span><span class="title-sep">:</span><span class="title-kicker"> Print Label</span></h1>
+        <p id="statusText">Ready.</p>
+      </div>
+      <div class="topbar-actions">
+        <button id="popoutButton" type="button" title="Open in standalone window">Pop out</button>
+        <button id="resetLayoutButton" type="button" title="Reset saved popout position">Reset layout</button>
+      </div>
+    </header>
+
+    <div id="alertBanner" class="alert-banner" hidden></div>
+
+    <section class="download-label-panel">
+      <button id="grabOutlookAttachment" type="button">Download Label</button>
+      <p><span>Open Outlook Email then hit Download Label.</span><span>Download button in Outlook works as backup.</span></p>
+    </section>
+
+    <section class="recent-downloads">
+      <header>
+        <h2>Recent downloads</h2>
+        <div class="recent-download-actions">
+          <button id="clearDownloads" type="button">Clear list</button>
+          <button id="refreshDownloads" type="button">Refresh</button>
+        </div>
+      </header>
+      <div id="downloadsList" class="downloads-list">
+        <p class="empty">Checking recent label files...</p>
+      </div>
+      <div id="downloadPreview" class="download-preview" hidden></div>
+    </section>
+
+    <div id="inactivityWarning" class="inactivity-warning" hidden>
+      <div class="inactivity-content">
+        <span id="inactivityText">Label auto-clearing in 10s - tap Keep to cancel</span>
+        <div class="inactivity-bar">
+          <div id="inactivityProgress" class="inactivity-progress"></div>
+        </div>
+      </div>
+      <button id="inactivityCancel" type="button">Keep label</button>
+    </div>
+
+    <section id="progress" class="progress" hidden>
+      <div class="spinner"></div>
+      <div class="progress-copy">
+        <strong id="progressText">Extracting label - please wait</strong>
+        <span id="progressNote">Do not print, clear, or load another label until this finishes.</span>
+        <div class="loading-bar" aria-hidden="true">
+          <div id="loadingBarFill" class="loading-bar-fill"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="cropEditor" class="crop-editor" hidden>
+      <header>
+        <h2>Adjust crop</h2>
+        <div class="crop-header-actions">
+          <button id="applyCrop" type="button" class="apply-crop-btn">Apply crop</button>
+          <button id="resetCrop" type="button">Reset</button>
+          <button id="closeCropEditor" type="button">Close</button>
+        </div>
+      </header>
+      <div class="crop-stage">
+        <img id="cropImage" alt="Crop source">
+        <div id="cropLayer">
+          <div id="cropBox">
+            <span data-handle="nw"></span>
+            <span data-handle="ne"></span>
+            <span data-handle="sw"></span>
+            <span data-handle="se"></span>
+            <span data-handle="n"></span>
+            <span data-handle="s"></span>
+            <span data-handle="e"></span>
+            <span data-handle="w"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="results" class="results"></section>
+
+    <section id="labPanel" class="lab-panel" hidden>
+      <header>
+        <h2>Lab tools</h2>
+        <button id="copyDebugReport" type="button">Copy debug report</button>
+      </header>
+      <p id="debugReportStatus">Debug report includes file, pages, candidates, confidence, fallback state, and print mode.</p>
+    </section>
+
+    <details class="drop-zone-disclosure">
+      <summary>Choose file manually</summary>
+      <section id="dropZone" class="drop-zone" tabindex="0">
+        <input id="fileInput" type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,application/pdf,image/png,image/jpeg,image/gif" hidden>
+        <button id="pickFile" type="button">Choose file</button>
+      </section>
+    </details>
+
+    <section class="file-row">
+      <div>
+        <span class="label">Selected file</span>
+        <strong id="fileName">None</strong>
+      </div>
+      <div class="file-actions">
+        <button id="clearButton" type="button" disabled>Clear</button>
+        <button id="extractButton" type="button" disabled>Extract Label</button>
+      </div>
+      <p id="clearReminder" class="clear-reminder" hidden>Always clear before the next label</p>
+    </section>
+
+    <details class="print-settings-disclosure" open>
+      <summary><strong>Print: 4x6 Label</strong></summary>
+      <section id="printSettings" class="print-settings inactive">
+        <div class="sheet-preview">
+          <div class="sheet">
+            <img id="sheetPreviewLabel" alt="">
+          </div>
+        </div>
+      </section>
+    </details>
+
+    <section class="mode-panel">
+      <button id="modeToggle" type="button" title="Show lab tools and debug details">Lab mode</button>
+    </section>
+  </main>
+
+  <script src="lib/pdf.min.js"></script>
+  <script src="lib/ort.min.js"></script>
+  <script src="detection/crop-engine.js"></script>
+  <script src="detection/model-detector.js"></script>
+  <script src="detection/label-detector.js"></script>
+  <script src="detection/pdf-processor.js"></script>
+  <script src="detection/png-processor.js"></script>
+  <script src="config.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

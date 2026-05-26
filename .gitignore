@@ -1,0 +1,9 @@
+debug-*-images/
+*.log
+*.tmp
+*.bak
+*.zip
+*.crx
+*.pem
+.DS_Store
+Thumbs.db
