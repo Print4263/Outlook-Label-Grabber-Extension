@@ -25,6 +25,8 @@
     /FASHI[O0]N[O0]VA/,
     /FASHI[O0][O0]VA/
   ];
+  const LABEL_FRAME_MIN_ASPECT = 0.42;
+  const LABEL_FRAME_MAX_ASPECT = 2.4;
   const dashedBorderCache = new WeakMap();
 
   async function detectPdfPages(pages) {
@@ -790,7 +792,7 @@
     if (rect.width < canvas.width * 0.28 || rect.height < canvas.height * 0.28) return false;
     if (rect.width * rect.height < canvas.width * canvas.height * 0.12) return false;
     const ratio = rect.height / Math.max(1, rect.width);
-    return ratio >= 1.1 && ratio <= 2.4;
+    return ratio >= LABEL_FRAME_MIN_ASPECT && ratio <= LABEL_FRAME_MAX_ASPECT;
   }
 
   function groupNearbyValues(values, tolerance) {
