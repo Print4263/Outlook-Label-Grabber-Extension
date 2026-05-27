@@ -70,12 +70,12 @@
       pageEntries.sort((a, b) => b.priority - a.priority);
       const renderQueue = pageEntries.slice(0, MAX_RENDER_PAGES);
 
-      // --- Step 3: render the best text match first; only render more if it is weak ---
+      // --- Step 3: render the best text match first; only stop early for single-page PDFs.
       const pages = [];
       if (renderQueue.length) {
         pages.push(await renderPageEntry(renderQueue[0], pdf.numPages));
         const firstPass = await window.LabelExtractorDetector.detectPdfPages(pages);
-        if (Number(firstPass?.confidence || 0) >= STRONG_DETECTION_CONFIDENCE) {
+        if (pdf.numPages === 1 && Number(firstPass?.confidence || 0) >= STRONG_DETECTION_CONFIDENCE) {
           return firstPass;
         }
       }

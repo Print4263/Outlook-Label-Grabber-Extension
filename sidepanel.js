@@ -1147,6 +1147,7 @@ async function extractSelectedFile() {
 
     const localLabels = normalizeLocalResults(result);
     let candidates = await fullLabelCandidates(localLabels);
+    candidates = await addMissingPageCropOptions(candidates, localLabels);
     if (!candidates.length && hasCachedCanvasPages()) {
       candidates = await fileFallbackCandidates(localLabels);
     }
@@ -1347,6 +1348,50 @@ async function fullLabelCandidates(labels) {
   const limit = getVariantLimit(labels);
   const merged = dedupeLabels([...clean, ...cropNeeded]);
   return merged.slice(0, limit);
+}
+
+async function addMissingPageCropOptions(candidates, labels) {
+  if (!hasCachedCanvasPages()) return candidates;
+
+  const missingPages = missingRenderedPages(candidates);
+  if (!missingPages.length) return candidates;
+
+  const fallbackOptions = (await cachedFilePageFallbackLabels())
+    .filter((label) => missingPages.includes(Number(label.sourcePage || 0)));
+  if (!fallbackOptions.length) return candidates;
+
+  const limit = Math.max(4, getVariantLimit([...labels, ...candidates, ...fallbackOptions]));
+  const prioritizedFallbacks = fallbackOptions.sort(compareMissingPageFallbackLabels);
+  const ordered = prioritizedFallbacks.some((label) => Number(label.sourcePage || 0) === 2)
+    ? [...prioritizedFallbacks, ...candidates]
+    : [...candidates, ...prioritizedFallbacks];
+  return dedupeLabels(ordered).slice(0, limit);
+}
+
+function missingRenderedPages(candidates) {
+  const shownPages = new Set(
+    candidates
+      .map((label) => Number(label?.sourcePage || 0))
+      .filter(Boolean)
+  );
+
+  return state.cachedPages
+    .filter((page) => page?.canvas)
+    .map((page) => Number(page.pageIndex || 0) + 1)
+    .filter((pageNumber) => !shownPages.has(pageNumber));
+}
+
+function compareMissingPageFallbackLabels(a, b) {
+  return missingPageFallbackScore(b) - missingPageFallbackScore(a);
+}
+
+function missingPageFallbackScore(label) {
+  const pageNumber = Number(label?.sourcePage || 0);
+  let score = 0;
+  if (pageNumber === 2) score += 100;
+  if (pageNumber > 1) score += 10;
+  score += Number(label?.confidence || 0);
+  return score;
 }
 
 function dedupeLabels(labels) {
