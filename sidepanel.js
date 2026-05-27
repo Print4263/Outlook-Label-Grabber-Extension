@@ -1445,6 +1445,7 @@ function fileFallbackLabelFromPage(page) {
   const fallback = zoomedFallbackCanvas(page.canvas);
   const dataUrl = fallback.canvas.toDataURL("image/png");
   const pageNumber = Number(page.pageIndex || 0) + 1;
+  const pageText = page.text || "";
   return {
     carrier: fileFallbackCarrier(page),
     confidence: 0.32,
@@ -1452,26 +1453,52 @@ function fileFallbackLabelFromPage(page) {
     base64: dataUrl.split(",")[1],
     width: fallback.canvas.width,
     height: fallback.canvas.height,
-    variantName: `${fileFallbackPageTitle(page, pageNumber)} crop option`,
-    warnings: [FALLBACK_WARNING],
+    variantName: fileFallbackPageTitle(page, pageNumber),
+    warnings: [fileFallbackWarning(page)],
     sourcePage: pageNumber,
     pageCount: Number(page.pageCount || state.cachedPages.length),
     localReason: "file-page-fallback",
     localCropRect: fallback.rect,
-    pageText: page.text || "",
+    pageText,
     needsCrop: true
   };
 }
 
 function fileFallbackCarrier(page) {
+  const carrier = guessLabelCarrier(page?.text);
+  if (carrier) return carrier;
   return page?.type === "pdf" ? "PDF" : "File";
 }
 
 function fileFallbackPageTitle(page, pageNumber) {
-  if (page?.type === "pdf" && page.embeddedImageCount) {
-    return `Embedded PDF page ${pageNumber}`;
-  }
-  return `${String(page?.type || "file").toUpperCase()} page ${pageNumber}`;
+  if (isPackingSlipFallbackPage(page)) return "Packing slip page - review only";
+  if (isLikelyLabelFallbackPage(page)) return "Likely label page - crop if needed";
+  return `Page ${pageNumber} - review only`;
+}
+
+function fileFallbackWarning(page) {
+  if (isPackingSlipFallbackPage(page)) return "Review only; this page looks like order details.";
+  if (isLikelyLabelFallbackPage(page)) return "Crop if needed before printing.";
+  return FALLBACK_WARNING;
+}
+
+function isPackingSlipFallbackPage(page) {
+  const text = String(page?.text || "").toUpperCase();
+  return /PACKING SLIP|ORDER DETAILS|ITEM#|RMA#/.test(text) && !/SHIPPING LABEL|RETURN LABEL|TRACKING/.test(text);
+}
+
+function isLikelyLabelFallbackPage(page) {
+  const text = String(page?.text || "").toUpperCase();
+  return /SHIPPING LABEL|RETURN LABEL|RETURN MAILING LABEL|AFFIX|TRACKING|SHIP TO|SHIP FROM|USPS|UPS|FEDEX|DHL|ATTACHED RETURN LABEL/.test(text);
+}
+
+function guessLabelCarrier(text) {
+  const value = String(text || "").toUpperCase();
+  if (/\b1Z[0-9A-Z]{16}\b/.test(value) || /\bUPS\b|UPS TRACKING|UPS GROUND/.test(value)) return "UPS";
+  if (/\b(9\d{21,}|92\d{20,})\b/.test(value) || /USPS|POSTAL SERVICE|PRIORITY MAIL|GROUND ADVANTAGE/.test(value)) return "USPS";
+  if (/\b(\d{12}|\d{15}|\d{20})\b/.test(value) || /FEDEX|FEDERAL EXPRESS/.test(value)) return "FedEx";
+  if (/DHL/.test(value)) return "DHL";
+  return "";
 }
 
 function zoomedFallbackCanvas(sourceCanvas) {
@@ -1651,7 +1678,7 @@ function renderResults(payload) {
 
     const warnings = document.createElement("ul");
     warnings.className = "warnings";
-    (label.warnings || []).forEach((warning) => {
+    visibleWarnings(label).forEach((warning) => {
       const item = document.createElement("li");
       item.textContent = warning;
       warnings.append(item);
@@ -1659,6 +1686,7 @@ function renderResults(payload) {
 
     const debugMeta = document.createElement("dl");
     debugMeta.className = "label-debug-meta";
+    appendDebugMeta(debugMeta, "Tags", labDiagnosticTags(label).join(" / "));
     appendDebugMeta(debugMeta, "Variant", label.variantName || "Crop option");
     appendDebugMeta(debugMeta, "Reason", label.localReason || "unknown");
     appendDebugMeta(debugMeta, "Confidence", Number(label.confidence || 0).toFixed(2));
@@ -1693,8 +1721,34 @@ function renderResults(payload) {
   });
 }
 
+function visibleWarnings(label) {
+  if (state.uiMode === "lab") return label.warnings || [];
+  return (label.warnings || []).filter((warning) => !isTechnicalFallbackWarning(warning));
+}
+
+function isTechnicalFallbackWarning(warning) {
+  return /fallback result|source page|text-based pdf|embedded pdf/i.test(String(warning || ""));
+}
+
+function labDiagnosticTags(label) {
+  const tags = [];
+  if (label.pageCount) tags.push(`Page ${label.sourcePage || 1}`);
+  if (label.carrier) tags.push(label.carrier);
+  if (isFallbackLabel(label)) tags.push("fallback");
+  if (label.needsCrop || hasCropWarning(label)) tags.push("crop-needed");
+  if (!tags.length) tags.push("standard");
+  return tags;
+}
+
+function isFallbackLabel(label) {
+  return /fallback/i.test(String(label?.localReason || ""))
+    || /fallback/i.test((label?.warnings || []).join(" "))
+    || /fallback/i.test(String(label?.variantName || ""));
+}
+
 function resultDisplayName(label, index) {
   if (state.uiMode === "lab") return label.variantName || `Candidate ${index + 1}`;
+  if (isFallbackLabel(label) && label.variantName) return label.variantName;
   const hints = getLabelActionHints(label);
   if (hints.printReady) return "Label ready";
   if (hints.rotate) return "Rotate label";

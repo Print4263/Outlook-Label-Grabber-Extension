@@ -1,7 +1,8 @@
 (function () {
   "use strict";
 
-  const CROP_SAFETY_PADDING_RATIO = 0.035;
+  const CROP_SAFETY_PADDING_RATIO = 0.018;
+  const CROP_SAFETY_MIN_PADDING = 3;
   const CONTENT_SCAN_ROW_STEP = 2;
 
   function imageDataToCanvas(imageData) {
@@ -12,7 +13,7 @@
     return canvas;
   }
 
-  async function autoCropCanvas(sourceCanvas, padding = 10) {
+  async function autoCropCanvas(sourceCanvas, padding = 6) {
     const ctx = sourceCanvas.getContext("2d", { willReadFrequently: true });
     const { width, height } = sourceCanvas;
     const data = ctx.getImageData(0, 0, width, height).data;
@@ -96,8 +97,8 @@
   }
 
   function expandRect(rect, canvas, ratio) {
-    const growX = Math.max(6, rect.width * ratio);
-    const growY = Math.max(6, rect.height * ratio);
+    const growX = Math.max(CROP_SAFETY_MIN_PADDING, rect.width * ratio);
+    const growY = Math.max(CROP_SAFETY_MIN_PADDING, rect.height * ratio);
     return {
       x: rect.x - growX,
       y: rect.y - growY,
