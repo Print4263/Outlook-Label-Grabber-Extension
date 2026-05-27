@@ -484,6 +484,17 @@ h2 {
   50% { color: #0e7490; text-shadow: 0 0 10px rgba(14, 165, 233, 0.52); }
 }
 
+@keyframes use-button-glow {
+  0%, 100% {
+    box-shadow: 0 3px 10px rgba(22, 163, 74, 0.28), 0 0 0 0 rgba(34, 197, 94, 0);
+    transform: translateY(0);
+  }
+  50% {
+    box-shadow: 0 5px 18px rgba(22, 163, 74, 0.42), 0 0 0 6px rgba(34, 197, 94, 0.22);
+    transform: translateY(-1px);
+  }
+}
+
 .download-row.new-row {
   border-color: #22c55e;
   background: #f0fdf4;
@@ -643,10 +654,18 @@ h2 {
   color: #fff;
   border-color: #15803d;
   background: linear-gradient(180deg, #22c55e, #16a34a);
-  box-shadow: 0 3px 10px rgba(22, 163, 74, 0.28);
+  animation: use-button-glow 1s ease-in-out 10;
 }
 
-.download-row.new-row .use-download-button:hover {
+.download-row.fresh-row .use-download-button {
+  color: #fff;
+  border-color: #15803d;
+  background: linear-gradient(180deg, #22c55e, #16a34a);
+  animation: use-button-glow 1s ease-in-out 10;
+}
+
+.download-row.new-row .use-download-button:hover,
+.download-row.fresh-row .use-download-button:hover {
   background: linear-gradient(180deg, #4ade80, #22c55e);
 }
 
