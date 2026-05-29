@@ -39,6 +39,7 @@ const LOCAL_DETECTOR_REASONS = new Set([
   "lower-barcode-label",
   "barcode-density",
   "text-label-page",
+  "embedded-twin-label",
   "embedded-label-page",
   "image-label-fallback",
   "manual-image-fallback",
@@ -236,6 +237,8 @@ function buildDebugReport() {
     reason: label.localReason || "",
     sourcePage: label.sourcePage || null,
     pageCount: label.pageCount || null,
+    twinLabelIndex: label.twinLabelIndex || null,
+    twinLabelCount: label.twinLabelCount || null,
     size: `${label.width || 0}x${label.height || 0}`,
     needsCrop: Boolean(label.needsCrop),
     warnings: label.warnings || []
@@ -1147,7 +1150,9 @@ async function extractSelectedFile() {
 
     const localLabels = normalizeLocalResults(result);
     let candidates = await fullLabelCandidates(localLabels);
-    candidates = await addMissingPageCropOptions(candidates, localLabels);
+    if (getTwinLabelCount(candidates) <= 1) {
+      candidates = await addMissingPageCropOptions(candidates, localLabels);
+    }
     if (!candidates.length && hasCachedCanvasPages()) {
       candidates = await fileFallbackCandidates(localLabels);
     }
@@ -1166,7 +1171,10 @@ async function extractSelectedFile() {
     state.selectedLabelIndex = candidates.length ? 0 : -1;
     renderResults({ labels: state.results });
     updateSheetPreview();
-    setStatus(candidates.length ? "Ready to print." : "No label candidates found - try another file or crop manually.");
+    const twinCount = getTwinLabelCount(candidates);
+    setStatus(twinCount > 1
+      ? `${twinCount} labels found - print each one from this screen.`
+      : candidates.length ? "Ready to print." : "No label candidates found - try another file or crop manually.");
     if (candidates.length) resetInactivityTimer();
   } catch (error) {
     if (runId !== state.extractionRunId) return;
@@ -1235,7 +1243,9 @@ function localDetectionToLabel(result) {
     pageCount: Number(result.pageCount || 0),
     localReason: result.reason,
     localCropRect: result.cropRect || null,
-    needsCrop: likelyPartial || Boolean(result.needsCrop)
+    needsCrop: likelyPartial || Boolean(result.needsCrop),
+    twinLabelIndex: result.twinLabelIndex || null,
+    twinLabelCount: result.twinLabelCount || null
   };
 }
 
@@ -1279,6 +1289,7 @@ function isLikelyPartialLocalDetection(result) {
 }
 
 function localVariantName(result) {
+  if (result.reason === "embedded-twin-label") return result.variantName || `Label ${result.twinLabelIndex || 1} of ${result.twinLabelCount || 2}`;
   const page = Number(result.pageIndex || 0) + 1;
   if (result.reason === "solid-border") return `Local label page ${page}`;
   if (result.reason === "keywords") return `Carrier text label page ${page}`;
@@ -1332,6 +1343,13 @@ async function runLocalDetector(file) {
 }
 
 async function fullLabelCandidates(labels) {
+  const twinLabels = labels.filter((label) => Number(label.twinLabelCount || 0) > 1);
+  if (getTwinLabelCount(twinLabels) > 1) {
+    return twinLabels
+      .sort((a, b) => Number(a.twinLabelIndex || 0) - Number(b.twinLabelIndex || 0))
+      .slice(0, Number(twinLabels[0].twinLabelCount || twinLabels.length));
+  }
+
   const sorted = labels
     .sort(compareLabelQuality);
   const clean = sorted.filter((label) => {
@@ -1661,6 +1679,11 @@ function renderResults(payload) {
 
   els.printSettings.classList.remove("inactive");
 
+  const multiLabelCount = getTwinLabelCount(payload.labels);
+  if (multiLabelCount > 1) {
+    els.results.append(makeMultiLabelNotice(payload.labels, multiLabelCount));
+  }
+
   payload.labels.forEach((label, index) => {
     const card = document.createElement("article");
     card.className = "label-card";
@@ -1719,6 +1742,29 @@ function renderResults(payload) {
     if (index === state.selectedLabelIndex) card.classList.add("selected");
     els.results.append(card);
   });
+}
+
+function getTwinLabelCount(labels = []) {
+  const count = labels.reduce((max, label) => Math.max(max, Number(label?.twinLabelCount || 0)), 0);
+  const found = labels.filter((label) => Number(label?.twinLabelCount || 0) === count).length;
+  return count > 1 && found >= count ? count : 0;
+}
+
+function makeMultiLabelNotice(labels, count) {
+  const notice = document.createElement("div");
+  notice.className = "multi-label-notice";
+
+  const copy = document.createElement("div");
+  copy.innerHTML = `<strong>${count} labels found in this PDF</strong><span>Print Label 1 and Label 2 from here. No redownload needed.</span>`;
+
+  const printBoth = document.createElement("button");
+  printBoth.type = "button";
+  printBoth.className = "label-action label-action-print";
+  printBoth.textContent = "Print both";
+  printBoth.addEventListener("click", () => printLabelsInOrder(labels));
+
+  notice.append(copy, printBoth);
+  return notice;
 }
 
 function visibleWarnings(label) {
@@ -1830,23 +1876,40 @@ function makePrintButton(index, actionHints) {
   button.type = "button";
   button.textContent = "Print";
   decorateActionButton(button, "print", actionHints.printReady);
-  button.addEventListener("click", async () => {
-    state.selectedLabelIndex = index;
-    updateSheetPreview();
-    const rawUrl = labelToDataUrl(state.results[index]);
-    const scaledUrl = await resizeToLabelDpi(rawUrl, 203);
-    const printUrl = await prepareForPrint(scaledUrl);
-    printDataUrl(printUrl);
-    resetInactivityTimer("printed");
-    markActiveDownloadPrinted();
-    els.clearButton.classList.add("needs-clear");
-    els.clearReminder.hidden = false;
-    state.labelsPrintedCount++;
-    if (state.labelsPrintedCount % MEMORY_CLEANUP_EVERY === 0) {
-      backgroundMemoryCleanup().catch(() => {});
-    }
-  });
+  button.addEventListener("click", () => printLabelAtIndex(index));
   return button;
+}
+
+async function printLabelsInOrder(labels) {
+  const ordered = labels
+    .map((label, index) => ({ label, index }))
+    .filter(({ label }) => Number(label.twinLabelCount || 0) > 1)
+    .sort((a, b) => Number(a.label.twinLabelIndex || a.index + 1) - Number(b.label.twinLabelIndex || b.index + 1));
+
+  for (const item of ordered) {
+    await printLabelAtIndex(item.index, { keepDownloadVisible: item !== ordered[ordered.length - 1] });
+    await delay(350);
+  }
+}
+
+async function printLabelAtIndex(index, options = {}) {
+  const label = state.results[index];
+  if (!label) return;
+
+  state.selectedLabelIndex = index;
+  updateSheetPreview();
+  const rawUrl = labelToDataUrl(label);
+  const scaledUrl = await resizeToLabelDpi(rawUrl, 203);
+  const printUrl = await prepareForPrint(scaledUrl);
+  printDataUrl(printUrl);
+  resetInactivityTimer("printed");
+  if (!options.keepDownloadVisible) markActiveDownloadPrinted();
+  els.clearButton.classList.add("needs-clear");
+  els.clearReminder.hidden = false;
+  state.labelsPrintedCount++;
+  if (state.labelsPrintedCount % MEMORY_CLEANUP_EVERY === 0) {
+    backgroundMemoryCleanup().catch(() => {});
+  }
 }
 
 function makeExpandButton(index, label) {
@@ -2432,10 +2495,18 @@ async function applyManualCrop() {
     ctx.fillRect(0, 0, sw, sh);
     ctx.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh);
 
-    const [croppedLabel, wasRotated] = await autoOrientLabel(labelFromCanvas(canvas, label, "Manual crop"));
-    state.results.splice(index, 1);
-    state.results.unshift(croppedLabel);
-    state.selectedLabelIndex = 0;
+    const cropName = label.twinLabelCount > 1
+      ? `Label ${label.twinLabelIndex || index + 1} of ${label.twinLabelCount} crop`
+      : "Manual crop";
+    const [croppedLabel, wasRotated] = await autoOrientLabel(labelFromCanvas(canvas, label, cropName));
+    if (label.twinLabelCount > 1) {
+      state.results[index] = croppedLabel;
+      state.selectedLabelIndex = index;
+    } else {
+      state.results.splice(index, 1);
+      state.results.unshift(croppedLabel);
+      state.selectedLabelIndex = 0;
+    }
     closeCropEditor();
     renderResults({ labels: state.results });
     updateSheetPreview();

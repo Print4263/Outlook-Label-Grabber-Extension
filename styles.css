@@ -845,6 +845,29 @@ h2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.multi-label-notice {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #86efac;
+  border-radius: 8px;
+  background: #f0fdf4;
+  color: #14532d;
+}
+
+.multi-label-notice div {
+  display: grid;
+  gap: 2px;
+}
+
+.multi-label-notice span {
+  font-size: 13px;
+  color: #166534;
+}
+
 /* Selected card checkmark badge */
 .label-card {
   position: relative;
