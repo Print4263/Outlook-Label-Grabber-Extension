@@ -95,14 +95,58 @@ if (window.__labelExtractorOutlookReaderLoaded) {
   // Initial attempt — Outlook SPA may not have rendered the reading pane yet
   retryUntilFound();
 
-  // Watch for Outlook's SPA navigation and reading pane changes
-  const observer = new MutationObserver(() => {
+  // Watch for Outlook's SPA navigation and reading pane changes.
+  // Observe the narrowest reading-pane container we can find instead of the
+  // entire document.body subtree — Outlook mutates the whole app constantly,
+  // and watching the reading pane cuts that noise dramatically. Falls back to
+  // document.body until the pane renders, then upgrades; a navigation listener
+  // re-binds if Outlook swaps the pane node out from under us.
+  const READING_PANE_SELECTORS = [
+    '[data-app-section="ReadingPane"]',
+    '.ReadingPaneContent',
+    '[role="main"]'
+  ];
+
+  let observer = null;
+  let observedTarget = null;
+
+  function findReadingPane() {
+    for (const selector of READING_PANE_SELECTORS) {
+      try {
+        const el = document.querySelector(selector);
+        if (el) return el;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  function attachObserver() {
+    const target = findReadingPane() || document.body;
+    if (observer && target === observedTarget && target.isConnected) return;
+    if (observer) observer.disconnect();
+    observedTarget = target;
+    observer = new MutationObserver(handleMutation);
+    observer.observe(target, { childList: true, subtree: true });
+  }
+
+  function handleMutation() {
     clearTimeout(retryTimer);
     retryCount = 0;
     scheduleRead();
-  });
+    // Upgrade body -> reading pane once it renders, or re-bind if the
+    // observed node was detached by an Outlook re-render.
+    const pane = findReadingPane();
+    if ((observedTarget === document.body && pane) || !observedTarget.isConnected) {
+      attachObserver();
+    }
+  }
 
-  observer.observe(document.body, { childList: true, subtree: true });
+  attachObserver();
+
+  // SPA navigation safety net: re-read and re-bind even if the pane node was
+  // replaced (a swapped-out pane stops emitting mutations on its own).
+  window.addEventListener("hashchange", () => { attachObserver(); scheduleRead(); });
+  window.addEventListener("popstate", () => { attachObserver(); scheduleRead(); });
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== "grab-outlook-label-attachment") return false;

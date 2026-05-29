@@ -112,7 +112,9 @@
     canvas.height = Math.ceil(viewport.height);
 
     await page.render({
-      canvasContext: canvas.getContext("2d"),
+      // willReadFrequently: the detectors call getImageData on this canvas many
+      // times, so request a CPU-backed context up front to avoid readback warnings.
+      canvasContext: canvas.getContext("2d", { willReadFrequently: true }),
       viewport
     }).promise;
 

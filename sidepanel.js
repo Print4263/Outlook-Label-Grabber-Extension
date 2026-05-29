@@ -1137,7 +1137,7 @@ async function extractSelectedFile() {
   setLoadingProgress(12);
   els.extractButton.disabled = true;
   els.results.replaceChildren();
-    setStatus("Extracting label - please wait...", "loading");
+  setStatus("Extracting label - please wait...", "loading");
 
   try {
     const normalizedFile = await normalizeFileForExtraction(state.file);
@@ -2140,6 +2140,10 @@ async function prepareForPrint(dataUrl) {
 }
 
 function printDataUrl(dataUrl) {
+  // Open an independent, screen-centered print window (what staff prefer to see).
+  // Printing is driven from here (the parent) once the label image has actually
+  // loaded, then the window closes itself after printing — a single deterministic
+  // trigger, instead of the blank/early dialog the old timed retries could cause.
   const bounds = getPrintPopupBounds();
   const printWindow = window.open("", "_blank", [
     `width=${bounds.width}`,
@@ -2149,48 +2153,81 @@ function printDataUrl(dataUrl) {
     `screenX=${bounds.left}`,
     `screenY=${bounds.top}`
   ].join(","));
+
   if (printWindow) {
     positionPrintWindow(printWindow, bounds);
     printWindow.document.open();
-    printWindow.document.write(makePrintHtml(dataUrl, true, bounds));
+    printWindow.document.write(makePrintHtml(dataUrl));
     printWindow.document.close();
-    triggerPrintDialog(printWindow, bounds);
+    printWindowWhenReady(printWindow);
     return;
   }
 
+  // Popup was blocked — fall back to a hidden off-screen iframe so printing
+  // still works without a visible window.
   const frame = document.createElement("iframe");
   frame.className = "print-frame";
-  document.body.append(frame);
-  const doc = frame.contentDocument;
-  doc.open();
-  doc.write(makePrintHtml(dataUrl, false, bounds));
-  doc.close();
+  frame.setAttribute("aria-hidden", "true");
 
-  setTimeout(() => {
-    frame.contentWindow.focus();
-    frame.contentWindow.print();
-    setTimeout(() => frame.remove(), 30000);
-  }, 300);
+  let done = false;
+  const cleanup = () => {
+    if (done) return;
+    done = true;
+    frame.remove();
+  };
+
+  frame.addEventListener("load", () => {
+    const win = frame.contentWindow;
+    if (!win) { cleanup(); return; }
+    whenLabelImageReady(frame.contentDocument, () => {
+      try {
+        win.addEventListener("afterprint", () => setTimeout(cleanup, 250), { once: true });
+        win.focus();
+        win.print();
+      } catch (_) {
+        cleanup();
+        return;
+      }
+      setTimeout(cleanup, 120000); // backstop if afterprint never fires
+    });
+  }, { once: true });
+
+  document.body.append(frame);
+  frame.srcdoc = makePrintHtml(dataUrl);
 }
 
-function triggerPrintDialog(win, bounds) {
+// Print the centered popup window once its label image is loaded, then let it
+// close itself after the print dialog is dismissed.
+function printWindowWhenReady(win) {
   let printed = false;
-  const printOnce = () => {
+  const fire = () => {
     if (printed || win.closed) return;
     printed = true;
-    positionPrintWindow(win, bounds);
     try {
+      win.addEventListener("afterprint", () => {
+        setTimeout(() => { try { win.close(); } catch (_) {} }, 250);
+      }, { once: true });
       win.focus();
       win.print();
     } catch (_) {}
   };
 
-  try {
-    win.addEventListener("load", () => setTimeout(printOnce, 150), { once: true });
-  } catch (_) {}
+  whenLabelImageReady(win.document, fire);
+  // Safety net: a data-URL image is effectively instant, but never leave the
+  // window hanging if the load event somehow doesn't arrive.
+  setTimeout(fire, 3000);
+}
 
-  setTimeout(printOnce, 450);
-  setTimeout(printOnce, 1200);
+// Invoke callback once the #label image in doc has loaded (or immediately if
+// it is already complete / missing).
+function whenLabelImageReady(doc, callback) {
+  const img = doc && doc.getElementById("label");
+  if (!img || img.complete) {
+    callback();
+    return;
+  }
+  img.addEventListener("load", callback, { once: true });
+  img.addEventListener("error", callback, { once: true });
 }
 
 function getPrintPopupBounds() {
@@ -2216,18 +2253,18 @@ function positionPrintWindow(win, bounds) {
   } catch (_) {}
 }
 
-function makePrintHtml(dataUrl, closeAfterPrint, bounds) {
+function makePrintHtml(dataUrl) {
   const escaped = escapeHtml(dataUrl);
   const width = clamp(Number(state.printWidth || 4), 2.5, 8.5);
   const left = clamp(Number(state.printLeft || 0), 0, 7.5);
   const top = clamp(Number(state.printTop || 0), 0, 10);
   const isLabelMode = state.printMode === "label";
-  if (isLabelMode) return makeLabelPrintHtml(escaped, closeAfterPrint, bounds);
+  if (isLabelMode) return makeLabelPrintHtml(escaped);
   const maxWidth = Math.max(0.5, 8.5 - left);
   const maxHeight = Math.max(0.5, 11 - top);
   const labelWidth = Math.min(width, maxWidth);
   const labelHeight = Math.min(labelWidth * 1.5, maxHeight);
-  const viewportWidth = bounds?.width || 980;
+  const viewportWidth = 980;
   const scale = Math.max(0.72, Math.min(1, (viewportWidth - 80) / 816));
   return `<!doctype html>
 <html>
@@ -2263,20 +2300,12 @@ function makePrintHtml(dataUrl, closeAfterPrint, bounds) {
 </head>
 <body>
   <div class="label"><img id="label" src="${escaped}" alt="Shipping label"></div>
-  <script>
-    const closeAfterPrint = ${closeAfterPrint ? "true" : "false"};
-    function doPrint() { setTimeout(function () { window.focus(); window.print(); }, 300); }
-    const image = document.getElementById("label");
-    if (image.complete) doPrint();
-    else image.addEventListener("load", doPrint, { once: true });
-    ${closeAfterPrint ? 'window.addEventListener("afterprint", function () { setTimeout(function () { window.close(); }, 250); }, { once: true });' : ''}
-  </script>
 </body>
 </html>`;
 }
 
-function makeLabelPrintHtml(escapedDataUrl, closeAfterPrint, bounds) {
-  const viewportWidth = bounds?.width || 980;
+function makeLabelPrintHtml(escapedDataUrl) {
+  const viewportWidth = 980;
   const scale = Math.max(0.85, Math.min(1.3, (viewportWidth - 120) / 384));
   return `<!doctype html>
 <html>
@@ -2306,13 +2335,6 @@ function makeLabelPrintHtml(escapedDataUrl, closeAfterPrint, bounds) {
 </head>
 <body>
   <img id="label" src="${escapedDataUrl}" alt="Shipping label">
-  <script>
-    function doPrint() { setTimeout(function () { window.focus(); window.print(); }, 300); }
-    const image = document.getElementById("label");
-    if (image.complete) doPrint();
-    else image.addEventListener("load", doPrint, { once: true });
-    ${closeAfterPrint ? 'window.addEventListener("afterprint", function () { setTimeout(function () { window.close(); }, 250); }, { once: true });' : ''}
-  </script>
 </body>
 </html>`;
 }

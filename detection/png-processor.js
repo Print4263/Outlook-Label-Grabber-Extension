@@ -11,7 +11,7 @@
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(naturalWidth * scale));
     canvas.height = Math.max(1, Math.round(naturalHeight * scale));
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     ctx.imageSmoothingEnabled = scale < 1;
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
