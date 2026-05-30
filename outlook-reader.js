@@ -159,15 +159,53 @@ if (window.__labelExtractorOutlookReaderLoaded) {
     return true;
   });
 
+  // --- Diagnostic logging for the "Download Label" grab -------------------
+  // Set LABEL_GRAB_DEBUG to true to print grab diagnostics in the Outlook console.
+  const LABEL_GRAB_DEBUG = false;
+  const GRAB_MAX_RETRIES = 3;
+  const GRAB_RETRY_DELAY_MS = 400;
+  function grabLog(...args) {
+    if (LABEL_GRAB_DEBUG) console.log("[Label Extractor][grab]", ...args);
+  }
+  function describeEl(el) {
+    if (!el) return "(none)";
+    const text = (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 70);
+    const cls = typeof el.className === "string" ? el.className.slice(0, 40) : "";
+    const role = el.getAttribute?.("role");
+    const testid = el.getAttribute?.("data-testid");
+    return `<${(el.tagName || "?").toLowerCase()}`
+      + `${role ? ` role=${role}` : ""}`
+      + `${testid ? ` testid=${testid}` : ""}`
+      + `${cls ? ` class="${cls}"` : ""}> "${text}"`;
+  }
+  // ------------------------------------------------------------------------
+
   async function grabLikelyLabelAttachment() {
-    const candidates = findAttachmentCandidates();
+    // The attachment chip may not have rendered yet (common in the Outlook PWA
+    // right after the email opens). Re-scan a few times before giving up — this
+    // is a read-only DOM query with no side effects, so retrying is safe.
+    let candidates = findAttachmentCandidates();
+    for (let attempt = 1; attempt <= GRAB_MAX_RETRIES && !candidates.length; attempt += 1) {
+      grabLog(`no candidates yet — retry ${attempt}/${GRAB_MAX_RETRIES} after ${GRAB_RETRY_DELAY_MS}ms`);
+      await delay(GRAB_RETRY_DELAY_MS);
+      candidates = findAttachmentCandidates();
+    }
+
+    grabLog(`found ${candidates.length} candidate(s):`);
+    candidates.forEach((c, i) =>
+      grabLog(`  #${i} score=${c.score} fileName="${c.fileName}" el=${describeEl(c.element)}`));
+
     if (!candidates.length) {
+      grabLog("RESULT: no candidates — the attachment chip was not recognized in the DOM.");
       return { ok: false, message: "No PDF or image attachment found in the current Outlook email." };
     }
 
     const best = candidates[0];
+    grabLog("chosen best candidate el =", describeEl(best.element));
+
     const target = await findDownloadTarget(best.element);
     if (target) {
+      grabLog("RESULT: clicking download-action target =", describeEl(target));
       clickElement(target);
       return {
         ok: true,
@@ -175,9 +213,11 @@ if (window.__labelExtractorOutlookReaderLoaded) {
         method: "download-action"
       };
     }
+    grabLog("findDownloadTarget: no download control found in the chip or its menu.");
 
     const previewTarget = await openPreviewAndFindDownload(best.element);
     if (previewTarget) {
+      grabLog("RESULT: clicking preview-download-action target =", describeEl(previewTarget));
       clickElement(previewTarget);
       return {
         ok: true,
@@ -185,9 +225,11 @@ if (window.__labelExtractorOutlookReaderLoaded) {
         method: "preview-download-action"
       };
     }
+    grabLog("openPreviewAndFindDownload: no download control found in the preview.");
 
     const keyboardTarget = await openAttachmentMenuWithKeyboard(best.element);
     if (keyboardTarget) {
+      grabLog("RESULT: clicking keyboard-menu-download-action target =", describeEl(keyboardTarget));
       clickElement(keyboardTarget);
       return {
         ok: true,
@@ -195,9 +237,11 @@ if (window.__labelExtractorOutlookReaderLoaded) {
         method: "keyboard-menu-download-action"
       };
     }
+    grabLog("openAttachmentMenuWithKeyboard: no download control found.");
 
     const lastChanceTarget = findAnyVisibleDownloadAction();
     if (lastChanceTarget) {
+      grabLog("RESULT: clicking page-download-action target =", describeEl(lastChanceTarget));
       clickElement(lastChanceTarget);
       return {
         ok: true,
@@ -205,6 +249,7 @@ if (window.__labelExtractorOutlookReaderLoaded) {
         method: "page-download-action"
       };
     }
+    grabLog("RESULT: attachment recognized but NO download control found by any strategy.");
 
     return {
       ok: false,

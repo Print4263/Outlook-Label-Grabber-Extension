@@ -5,6 +5,7 @@ Microsoft Edge MV3 extension for extracting and printing shipping labels. Runs e
 ## What It Does
 
 - Adds a large Download Label button for the open Outlook email.
+- Retries briefly when Outlook is still rendering an email's attachment chip.
 - Keeps Recent downloads as a backup when staff uses Outlook's normal download button.
 - Detects shipping labels from PDF, PNG, JPG, JPEG, and GIF files using local detection.
 - Shows label results with rotate, crop, print, and expand actions.
