@@ -1,8 +1,14 @@
 (function () {
   "use strict";
 
-  const CROP_SAFETY_PADDING_RATIO = 0.018;
-  const CROP_SAFETY_MIN_PADDING = 3;
+  // Detected borders often sit just inside the printable label area. Keep enough
+  // surrounding room for edge-aligned address text and carrier marks.
+  const CROP_SAFETY_PADDING_RATIO = 0.12;
+  const CROP_SAFETY_LEFT_EXTRA_RATIO = 0.035;
+  const CROP_SAFETY_RIGHT_EXTRA_RATIO = 0.01;
+  const CROP_SAFETY_TOP_EXTRA_RATIO = 0.07;
+  const CROP_SAFETY_BOTTOM_EXTRA_RATIO = 0.035;
+  const CROP_SAFETY_MIN_PADDING = 16;
   const CONTENT_SCAN_ROW_STEP = 2;
 
   function imageDataToCanvas(imageData) {
@@ -13,7 +19,7 @@
     return canvas;
   }
 
-  async function autoCropCanvas(sourceCanvas, padding = 6) {
+  async function autoCropCanvas(sourceCanvas, padding = 6, options = {}) {
     const ctx = sourceCanvas.getContext("2d", { willReadFrequently: true });
     const { width, height } = sourceCanvas;
     const data = ctx.getImageData(0, 0, width, height).data;
@@ -28,7 +34,7 @@
       y: Math.max(0, bounds.top - padding),
       width: Math.min(width - Math.max(0, bounds.left - padding), bounds.right - bounds.left + 1 + padding * 2),
       height: Math.min(height - Math.max(0, bounds.top - padding), bounds.bottom - bounds.top + 1 + padding * 2)
-    });
+    }, options);
   }
 
   function findContentBounds(data, width, height) {
@@ -73,8 +79,8 @@
     return -1;
   }
 
-  async function cropCanvas(sourceCanvas, rect) {
-    const normalized = normalizeRect(expandRect(rect, sourceCanvas, CROP_SAFETY_PADDING_RATIO), sourceCanvas);
+  async function cropCanvas(sourceCanvas, rect, options = {}) {
+    const normalized = normalizeRect(expandRect(rect, sourceCanvas, CROP_SAFETY_PADDING_RATIO, options), sourceCanvas);
     const { x, y, width, height } = normalized;
 
     const canvas = document.createElement("canvas");
@@ -96,14 +102,20 @@
     return { x: left, y: top, width: right - left, height: bottom - top };
   }
 
-  function expandRect(rect, canvas, ratio) {
+  function expandRect(rect, canvas, ratio, options = {}) {
     const growX = Math.max(CROP_SAFETY_MIN_PADDING, rect.width * ratio);
+    const growLeft = growX + rect.width * CROP_SAFETY_LEFT_EXTRA_RATIO;
+    const growRight = growX + rect.width * CROP_SAFETY_RIGHT_EXTRA_RATIO;
     const growY = Math.max(CROP_SAFETY_MIN_PADDING, rect.height * ratio);
+    const growTop = growY + rect.height * CROP_SAFETY_TOP_EXTRA_RATIO;
+    const growBottom = growY + rect.height * (
+      CROP_SAFETY_BOTTOM_EXTRA_RATIO + Number(options.bottomExtraRatio || 0)
+    );
     return {
-      x: rect.x - growX,
-      y: rect.y - growY,
-      width: rect.width + growX * 2,
-      height: rect.height + growY * 2
+      x: rect.x - growLeft,
+      y: rect.y - growTop,
+      width: rect.width + growLeft + growRight,
+      height: rect.height + growTop + growBottom
     };
   }
 

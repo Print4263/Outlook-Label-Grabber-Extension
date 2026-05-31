@@ -8,7 +8,8 @@
     "debug-ebay-images/page1_image3_Im1.png",
     "debug-ebay-images/page1_image4_Im2.png",
     "debug-online-return-images/page2_image1_Im1.png",
-    "debug-online-return-images/page2_image2_Im2.png"
+    "debug-online-return-images/page2_image2_Im2.png",
+    "debug-pdf-labels/ups-view-print-foldhere.pdf"
   ];
 
   // Confidence floors mirrored from sidepanel.js so the harness grades the same way the app does.

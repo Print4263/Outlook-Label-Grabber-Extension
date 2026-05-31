@@ -40,6 +40,22 @@
     return score;
   }
 
+  // Locate the "FOLD HERE" divider and return its position as a fraction from the
+  // top of the page (0 = top, 1 = bottom). On UPS "View/Print Label" sheets the
+  // actual shipping label sits below this line; everything above it is instructions.
+  // Returns null when the page has no fold line.
+  function findFoldRatio(items, page, joinedText) {
+    if (!/fold\s*here/i.test(joinedText || "")) return null;
+    const pageHeight = page.getViewport({ scale: 1 }).height;
+    if (!pageHeight) return null;
+    // "FOLD HERE" may be one item or split into "FOLD" / "HERE"; the FOLD token's
+    // baseline y (transform[5], measured from the page bottom) marks the line.
+    const foldItem = items.find((it) => /\bfold\b/i.test(it.str)) || items.find((it) => /fold/i.test(it.str));
+    if (!foldItem?.transform) return null;
+    const ratioFromTop = 1 - (foldItem.transform[5] / pageHeight);
+    return (ratioFromTop > 0.05 && ratioFromTop < 0.95) ? ratioFromTop : null;
+  }
+
   async function process(captured) {
     try {
       const pdfjsLib = await loadPdfJs();
@@ -52,16 +68,22 @@
           const pageNum = idx + 1;
           const page = await pdf.getPage(pageNum);
           let text = "";
+          let foldRatio = null;
           try {
             const textContent = await page.getTextContent();
             text = textContent.items.map((item) => item.str).join(" ");
+            foldRatio = findFoldRatio(textContent.items, page, text);
           } catch (_) {}
-          const embeddedImageCount = await countEmbeddedImages(page, pdfjsLib);
+          const embeddedImageInfo = await extractEmbeddedImages(page, pdfjsLib);
+          const embeddedImages = embeddedImageInfo.images;
+          const embeddedImageCount = embeddedImageInfo.count;
           return {
             pageIndex: idx,
             pageNum,
             page,
             text,
+            foldRatio,
+            embeddedImages,
             embeddedImageCount,
             priority: scoreLabelPage(text) + Math.min(embeddedImageCount, 3) * 0.75
           };
@@ -103,7 +125,7 @@
   }
 
   async function renderPageEntry(entry, pageCount) {
-    const { pageIndex, page, text, embeddedImageCount } = entry;
+    const { pageIndex, page, text, embeddedImages, embeddedImageCount, foldRatio } = entry;
     const naturalViewport = page.getViewport({ scale: 1 });
     const renderScale = Math.min(4, Math.max(3, 1200 / naturalViewport.width));
     const viewport = page.getViewport({ scale: renderScale });
@@ -128,26 +150,109 @@
       naturalHeight: naturalViewport.height,
       pageCount,
       text,
+      foldRatio: Number.isFinite(foldRatio) ? foldRatio : null,
+      embeddedImages: Array.isArray(embeddedImages) ? embeddedImages : [],
       embeddedImageCount: Number(embeddedImageCount || 0)
     };
   }
 
-  async function countEmbeddedImages(page, pdfjsLib) {
+  async function extractEmbeddedImages(page, pdfjsLib) {
     try {
       const ops = await page.getOperatorList();
-      const imageOps = new Set([
+      const objectImageOps = new Set([
         pdfjsLib.OPS.paintImageXObject,
         pdfjsLib.OPS.paintImageXObjectRepeat,
-        pdfjsLib.OPS.paintInlineImageXObject,
-        pdfjsLib.OPS.paintInlineImageXObjectGroup,
-        pdfjsLib.OPS.paintImageMaskXObject,
-        pdfjsLib.OPS.paintImageMaskXObjectRepeat,
         pdfjsLib.OPS.paintJpegXObject
       ].filter(Number.isFinite));
-      return ops.fnArray.reduce((count, fn) => count + (imageOps.has(fn) ? 1 : 0), 0);
+      const inlineImageOps = new Set([
+        pdfjsLib.OPS.paintInlineImageXObject
+      ].filter(Number.isFinite));
+      const countedImageOps = new Set([
+        ...objectImageOps,
+        ...inlineImageOps,
+        pdfjsLib.OPS.paintInlineImageXObjectGroup,
+        pdfjsLib.OPS.paintImageMaskXObject,
+        pdfjsLib.OPS.paintImageMaskXObjectRepeat
+      ].filter(Number.isFinite));
+      const images = [];
+      const seen = new Set();
+      let count = 0;
+
+      for (let index = 0; index < ops.fnArray.length; index += 1) {
+        const fn = ops.fnArray[index];
+        const args = ops.argsArray[index] || [];
+        let image = null;
+        if (countedImageOps.has(fn)) count += 1;
+
+        if (objectImageOps.has(fn) && typeof args[0] === "string") {
+          image = await getPageObject(page, args[0]);
+        } else if (inlineImageOps.has(fn)) {
+          image = args[0];
+        }
+
+        const canvas = embeddedImageCanvas(image);
+        if (!canvas || canvas.width < 160 || canvas.height < 160) continue;
+        const key = `${canvas.width}x${canvas.height}:${args[0] || index}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        images.push(canvas);
+      }
+
+      return { images, count };
     } catch (_) {
-      return 0;
+      return { images: [], count: 0 };
     }
+  }
+
+  function getPageObject(page, objectId) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value || null);
+      };
+      try {
+        const immediate = page.objs.get(objectId, finish);
+        if (immediate) finish(immediate);
+      } catch (_) {
+        finish(null);
+      }
+      setTimeout(() => finish(null), 1200);
+    });
+  }
+
+  function embeddedImageCanvas(image) {
+    if (!image) return null;
+    const source = image.bitmap || image;
+    const width = Number(source.width || image.width || 0);
+    const height = Number(source.height || image.height || 0);
+    if (!width || !height) return null;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, width, height);
+
+    try {
+      if (source.data) {
+        const rgba = rgbaImageData(source.data, width, height);
+        if (!rgba) return null;
+        ctx.putImageData(rgba, 0, 0);
+      } else {
+        ctx.drawImage(source, 0, 0, width, height);
+      }
+      return canvas;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function rgbaImageData(data, width, height) {
+    if (!data || data.length !== width * height * 4) return null;
+    return new ImageData(new Uint8ClampedArray(data), width, height);
   }
 
   async function splitTwinEmbeddedLabelPage(pages) {

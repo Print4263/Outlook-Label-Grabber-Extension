@@ -845,6 +845,16 @@ h2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.manual-crop-tip {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
 .multi-label-notice {
   grid-column: 1 / -1;
   display: flex;

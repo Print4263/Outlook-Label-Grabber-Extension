@@ -89,12 +89,14 @@
       </div>
     </section>
 
+    <p class="manual-crop-tip"><strong>Don't see the label first?</strong> Scroll down and use Crop to select it manually.</p>
     <section id="results" class="results"></section>
 
     <section id="labPanel" class="lab-panel" hidden>
       <header>
         <h2>Lab tools</h2>
         <button id="copyDebugReport" type="button">Copy debug report</button>
+        <button id="copyFailureLog" type="button">Copy failure log</button>
       </header>
       <p id="debugReportStatus">Debug report includes file, pages, candidates, confidence, fallback state, and print mode.</p>
     </section>
@@ -102,7 +104,7 @@
     <details class="drop-zone-disclosure">
       <summary>Choose file manually</summary>
       <section id="dropZone" class="drop-zone" tabindex="0">
-        <input id="fileInput" type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,application/pdf,image/png,image/jpeg,image/gif" hidden>
+        <input id="fileInput" type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.heic,.heif,application/pdf,image/png,image/jpeg,image/gif,image/heic,image/heif" hidden>
         <button id="pickFile" type="button">Choose file</button>
       </section>
     </details>

@@ -4,6 +4,8 @@ const LabelExtractorConfig = {
     "application/pdf",
     "image/png",
     "image/jpeg",
-    "image/gif"
+    "image/gif",
+    "image/heic",
+    "image/heif"
   ]
 };

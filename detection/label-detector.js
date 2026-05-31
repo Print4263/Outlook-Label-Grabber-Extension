@@ -31,6 +31,9 @@
   const ONLINE_RETURN_TOP_TRIM_RATIO = 0;
   const ONLINE_RETURN_LEFT_PAD_RATIO = 0.12;
   const dashedBorderCache = new WeakMap();
+  const barcodeRankCache = new WeakMap();
+  const BARCODE_EXCLUSION_PENALTY = -5;
+  const EMBEDDED_USPS_BORDER_OVERRIDE_CONFIDENCE = 0.97;
 
   async function detectPdfPages(pages) {
     const candidates = await detectPdfCandidates(pages);
@@ -42,14 +45,24 @@
 
     const candidates = [];
 
+    const embeddedUspsHit = await embeddedUspsLabelDetection(pages);
+    if (embeddedUspsHit) candidates.push(embeddedUspsHit);
+
     candidates.push(...await dashedBorderLabelDetections(pages));
     candidates.push(...await solidBorderLabelDetections(pages));
+
+    const foldHereHit = await foldHereLabelDetection(pages);
+    if (foldHereHit) candidates.push(foldHereHit);
 
     const labelSizedHit = await labelSizedPageDetection(pages);
     if (labelSizedHit) candidates.push(labelSizedHit);
 
     const strongEarly = rankedDetections(candidates, pages)[0];
-    if (Number(strongEarly?.confidence || 0) >= 0.95 && !shouldPreferCarrierText(strongEarly, pages)) return [strongEarly];
+    if (Number(strongEarly?.confidence || 0) >= 0.95
+      && !shouldPreferCarrierText(strongEarly, pages)
+      && cropContainsBarcodeOrUnknown(strongEarly, pages)) {
+      return [strongEarly];
+    }
 
     const modelHit = await trainedModelDetection(pages);
     if (modelHit) candidates.push(modelHit);
@@ -76,7 +89,7 @@
         pageIndex: 0,
         pageCount: 1,
         pages,
-        label: await window.LabelExtractorCrop.autoCropCanvas(pages[0].canvas)
+        label: await autoCropPageCanvas(pages[0])
       });
     }
 
@@ -172,7 +185,7 @@
       pageIndex: page.pageIndex,
       pageCount: getPageCount(pages),
       pages,
-      label: await window.LabelExtractorCrop.autoCropCanvas(page.canvas, 24),
+      label: await autoCropPageCanvas(page, 24),
       cropRect: null,
       sourceWidth: page.canvas.width,
       sourceHeight: page.canvas.height,
@@ -198,7 +211,7 @@
         pageIndex: page.pageIndex,
         pageCount: getPageCount(pages),
         pages,
-        label: await window.LabelExtractorCrop.cropCanvas(page.canvas, expanded),
+        label: await cropPageCanvas(page, expanded),
         cropRect: expanded,
         sourceWidth: page.canvas.width,
         sourceHeight: page.canvas.height,
@@ -261,6 +274,118 @@
     return pages.find((p) => p.pageIndex === pageIndex) || pages[0] || null;
   }
 
+  function cropOptionsForPage(page) {
+    const text = String(page?.text || "").toUpperCase();
+    const isUspsPdf = page?.type === "pdf" && /USPS|POSTAL SERVICE|GROUND ADVANTAGE|PRIORITY MAIL/.test(text);
+    return isUspsPdf ? { bottomExtraRatio: 0.035 } : {};
+  }
+
+  function cropPageCanvas(page, rect) {
+    return window.LabelExtractorCrop.cropCanvas(page.canvas, rect, cropOptionsForPage(page));
+  }
+
+  function autoCropPageCanvas(page, padding = 6) {
+    return window.LabelExtractorCrop.autoCropCanvas(page.canvas, padding, cropOptionsForPage(page));
+  }
+
+  async function embeddedUspsLabelDetection(pages) {
+    let best = null;
+
+    for (const page of pages) {
+      const text = String(page?.text || "").toUpperCase();
+      if (page?.type !== "pdf" || !/USPS|POSTAL SERVICE|GROUND ADVANTAGE|PRIORITY MAIL/.test(text)) continue;
+
+      for (const canvas of page.embeddedImages || []) {
+        if (!canvas || canvas.width < 300 || canvas.height < 300) continue;
+        const aspect = canvas.width / Math.max(1, canvas.height);
+        if (aspect < 0.38 || aspect > 2.65) continue;
+
+        const barcodeRegions = findBarcodeRegions(canvas);
+        if (!barcodeRegions.length) continue;
+        const score = canvas.width * canvas.height + barcodeRegions.length * 100000;
+        if (!best || score > best.score) best = { page, canvas, score };
+      }
+    }
+
+    if (!best) return null;
+    let label = window.LabelExtractorCrop.canvasToLabel(best.canvas);
+    if (label.width > label.height) {
+      label = await window.LabelExtractorCrop.rotateDataUrl(label.dataUrl, 90);
+    }
+
+    return {
+      confidence: 0.99,
+      reason: "embedded-usps-label",
+      carrier: "USPS",
+      pageIndex: best.page.pageIndex,
+      pageCount: getPageCount(pages),
+      pages,
+      label,
+      cropRect: null,
+      sourceWidth: best.canvas.width,
+      sourceHeight: best.canvas.height,
+      qualityScore: 12
+    };
+  }
+
+  // UPS "View/Print Label" / fold-and-tear sheets: instructions on top, the real
+  // shipping label below a "FOLD HERE" divider. pdf-processor records the fold's
+  // position (page.foldRatio); here we crop everything below it, rotate a landscape
+  // label upright, and only accept it when that lower section actually contains a
+  // barcode (so we never mistakenly grab an instruction block).
+  async function foldHereLabelDetection(pages) {
+    let best = null;
+
+    for (const page of pages) {
+      const ratio = Number(page.foldRatio);
+      if (!page.canvas || !(ratio > 0.05 && ratio < 0.95)) continue;
+
+      const canvas = page.canvas;
+      const margin = Math.round(canvas.height * 0.012);
+      const cutY = Math.max(0, Math.round(canvas.height * ratio) - margin);
+      const regionHeight = canvas.height - cutY;
+      if (regionHeight < canvas.height * 0.1) continue;
+
+      const region = document.createElement("canvas");
+      region.width = canvas.width;
+      region.height = regionHeight;
+      const ctx = region.getContext("2d", { willReadFrequently: true });
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, region.width, region.height);
+      ctx.drawImage(canvas, 0, cutY, canvas.width, regionHeight, 0, 0, region.width, regionHeight);
+
+      // Guard: the section below the fold must contain a barcode, or this isn't
+      // the "label below the fold" layout we're targeting.
+      if (findBarcodeRegions(region).length < 1) continue;
+
+      // The lower fold section is already the label area. Preserve it as-is:
+      // generic auto-crop can shave off quiet margins and outer label edges.
+      let label = window.LabelExtractorCrop.canvasToLabel(region);
+      if (label.width > label.height) {
+        label = await window.LabelExtractorCrop.rotateDataUrl(label.dataUrl, 90);
+      }
+
+      const score = (label.width * label.height) / Math.max(1, region.width * region.height);
+      if (!best || score > best.score) {
+        best = { page, label, score };
+      }
+    }
+
+    if (!best) return null;
+
+    return {
+      confidence: 0.97,
+      reason: "fold-here-label",
+      pageIndex: best.page.pageIndex,
+      pageCount: getPageCount(pages),
+      pages,
+      label: best.label,
+      sourceWidth: best.page.canvas.width,
+      sourceHeight: best.page.canvas.height,
+      qualityScore: 5
+    };
+  }
+
   async function labelSizedPageDetection(pages) {
     for (const page of pages) {
       if (!isLabelSizedPage(page.naturalWidth, page.naturalHeight)) continue;
@@ -270,7 +395,9 @@
         pageIndex: page.pageIndex,
         pageCount: getPageCount(pages),
         pages,
-        label: await window.LabelExtractorCrop.autoCropCanvas(page.canvas)
+        // This PDF page is already label-sized. Keep the complete page so quiet
+        // margins and outer label edges are never shaved off before printing.
+        label: window.LabelExtractorCrop.canvasToLabel(page.canvas)
       };
     }
     return null;
@@ -284,7 +411,7 @@
       if (!rect) continue;
       const areaRatio = (rect.width * rect.height) / Math.max(1, page.canvas.width * page.canvas.height);
       if (areaRatio < 0.08) continue;
-      let label = await window.LabelExtractorCrop.cropCanvas(page.canvas, rect);
+      let label = await cropPageCanvas(page, rect);
       if (knownOnlineReturnForm && label.width > label.height) {
         label = await window.LabelExtractorCrop.rotateDataUrl(label.dataUrl, 90);
       }
@@ -338,7 +465,7 @@
         pageIndex: page.pageIndex,
         pageCount: getPageCount(pages),
         pages,
-        label: await window.LabelExtractorCrop.cropCanvas(page.canvas, rect),
+        label: await cropPageCanvas(page, rect),
         cropRect: rect,
         sourceWidth: page.canvas.width,
         sourceHeight: page.canvas.height,
@@ -377,9 +504,21 @@
   }
 
   function compareDetections(a, b) {
+    if (shouldBorderOverrideEmbeddedUsps(a, b)) return -1;
+    if (shouldBorderOverrideEmbeddedUsps(b, a)) return 1;
+    if (a?.reason === "embedded-usps-label" && b?.reason !== "embedded-usps-label") return -1;
+    if (b?.reason === "embedded-usps-label" && a?.reason !== "embedded-usps-label") return 1;
+
     const scoreA = detectionRankScore(a);
     const scoreB = detectionRankScore(b);
     return scoreB - scoreA;
+  }
+
+  function shouldBorderOverrideEmbeddedUsps(borderCandidate, otherCandidate) {
+    if (otherCandidate?.reason !== "embedded-usps-label") return false;
+    if (!["dashed-border", "solid-border"].includes(borderCandidate?.reason)) return false;
+    if (Number(borderCandidate.confidence || 0) < EMBEDDED_USPS_BORDER_OVERRIDE_CONFIDENCE) return false;
+    return cropContainsBarcodeOrUnknown(borderCandidate, borderCandidate.pages || []);
   }
 
   function detectionRankScore(candidate) {
@@ -387,7 +526,45 @@
     return Number(candidate.qualityScore || 0)
       + Number(candidate.confidence || 0)
       + labelTextScore(page?.text)
-      + carrierTextPreferenceScore(candidate, page);
+      + carrierTextPreferenceScore(candidate, page)
+      + barcodeContainmentPenalty(candidate, page);
+  }
+
+  // A real shipping-label crop must contain a barcode. When a crop with explicit
+  // bounds excludes every barcode on the page — e.g. a border drawn around the
+  // instruction block on UPS "View/Print Label" / FOLD HERE sheets — it is almost
+  // certainly not the label, so we demote it heavily. Whole-page auto-crops (no
+  // cropRect) and pages with no detectable barcode are left untouched, so
+  // legitimate labels are never penalized.
+  function pageBarcodeRegions(canvas) {
+    if (!canvas) return [];
+    if (barcodeRankCache.has(canvas)) return barcodeRankCache.get(canvas);
+    const regions = findBarcodeRegions(canvas);
+    barcodeRankCache.set(canvas, regions);
+    return regions;
+  }
+
+  function rectContainsAnyBarcode(rect, regions) {
+    return regions.some((region) => {
+      const cx = region.x + region.width / 2;
+      const cy = region.y + region.height / 2;
+      return cx >= rect.x && cx <= rect.x + rect.width
+        && cy >= rect.y && cy <= rect.y + rect.height;
+    });
+  }
+
+  function barcodeContainmentPenalty(candidate, page) {
+    if (!candidate?.cropRect || !page?.canvas) return 0;
+    const regions = pageBarcodeRegions(page.canvas);
+    if (regions.length < 1) return 0;
+    return rectContainsAnyBarcode(candidate.cropRect, regions) ? 0 : BARCODE_EXCLUSION_PENALTY;
+  }
+
+  // True unless the crop has explicit bounds that exclude every barcode on a page
+  // that has barcodes — i.e. don't let such a crop short-circuit the cascade.
+  function cropContainsBarcodeOrUnknown(candidate, pages) {
+    const page = findPage(candidate?.pages || pages || [], candidate?.pageIndex);
+    return barcodeContainmentPenalty(candidate, page) === 0;
   }
 
   function shouldPreferCarrierText(candidate, pages) {
@@ -483,7 +660,7 @@
           height: Math.min(best.page.canvas.height - ry, barcodeBox.height + padY * 2)
         };
       }
-      const label = rect ? await window.LabelExtractorCrop.cropCanvas(best.page.canvas, rect) : await window.LabelExtractorCrop.autoCropCanvas(best.page.canvas);
+      const label = rect ? await cropPageCanvas(best.page, rect) : await autoCropPageCanvas(best.page);
       return {
         confidence: useWholeTextPage ? 0.58 : Math.min(0.92, 0.68 + best.score * 0.08),
         reason: "keywords",
@@ -520,7 +697,7 @@
         pageIndex: page.pageIndex,
         pageCount: getPageCount(pages),
         pages,
-        label: await window.LabelExtractorCrop.autoCropCanvas(page.canvas),
+        label: await autoCropPageCanvas(page),
         cropRect: null,
         sourceWidth: page.canvas.width,
         sourceHeight: page.canvas.height,
@@ -559,7 +736,7 @@
       pageIndex: best.page.pageIndex,
       pageCount: getPageCount(pages),
       pages,
-      label: await window.LabelExtractorCrop.cropCanvas(best.page.canvas, best.rect),
+      label: await cropPageCanvas(best.page, best.rect),
       cropRect: best.rect,
       sourceWidth: best.page.canvas.width,
       sourceHeight: best.page.canvas.height
@@ -590,7 +767,7 @@
       pageIndex: best.page.pageIndex,
       pageCount: getPageCount(pages),
       pages,
-      label: await window.LabelExtractorCrop.cropCanvas(best.page.canvas, best.rect),
+      label: await cropPageCanvas(best.page, best.rect),
       cropRect: best.rect,
       sourceWidth: best.page.canvas.width,
       sourceHeight: best.page.canvas.height
@@ -702,7 +879,7 @@
         pageIndex: best.page.pageIndex,
         pageCount: getPageCount(pages),
         pages,
-        label: await window.LabelExtractorCrop.cropCanvas(best.page.canvas, rect),
+        label: await cropPageCanvas(best.page, rect),
         cropRect: rect,
         sourceWidth: best.page.canvas.width,
         sourceHeight: best.page.canvas.height
@@ -727,8 +904,8 @@
         ? expandRect(unionRects(regions), page.canvas, 0.65)
         : null;
       const label = rect
-        ? await window.LabelExtractorCrop.cropCanvas(page.canvas, rect)
-        : await window.LabelExtractorCrop.autoCropCanvas(page.canvas);
+        ? await cropPageCanvas(page, rect)
+        : await autoCropPageCanvas(page);
 
       detections.push({
         confidence: 0.56,

@@ -35,11 +35,13 @@ const LOCAL_DETECTOR_REASONS = new Set([
   "page-dimensions",
   "dashed-border",
   "solid-border",
+  "fold-here-label",
   "keywords",
   "lower-barcode-label",
   "barcode-density",
   "text-label-page",
   "embedded-twin-label",
+  "embedded-usps-label",
   "embedded-label-page",
   "image-label-fallback",
   "manual-image-fallback",
@@ -99,6 +101,7 @@ const els = {
   results: document.getElementById("results"),
   labPanel: document.getElementById("labPanel"),
   copyDebugReport: document.getElementById("copyDebugReport"),
+  copyFailureLog: document.getElementById("copyFailureLog"),
   debugReportStatus: document.getElementById("debugReportStatus"),
   printSettings: document.getElementById("printSettings"),
   sheetPreviewLabel: document.getElementById("sheetPreviewLabel"),
@@ -142,11 +145,15 @@ async function init() {
   loadRecentDownloads();
   startDownloadsPolling();
   processPendingContextLabel(saved[PENDING_CONTEXT_LABEL_KEY]);
+  // Warm the ONNX model shortly after the panel opens so the first ambiguous
+  // label doesn't pay the full single-threaded load cost mid-workflow.
+  scheduleModelWarmup();
 }
 
 function bindEvents() {
   els.modeToggle?.addEventListener("click", toggleUiMode);
   els.copyDebugReport?.addEventListener("click", copyDebugReport);
+  els.copyFailureLog?.addEventListener("click", copyFailureLog);
   els.popoutButton?.addEventListener("click", openPopoutWindow);
   els.resetLayoutButton?.addEventListener("click", resetSavedPopoutLayout);
   els.pickFile.addEventListener("click", () => els.fileInput.click());
@@ -214,6 +221,30 @@ async function copyDebugReport() {
   } catch (error) {
     if (els.debugReportStatus) els.debugReportStatus.textContent = "Could not copy debug report.";
     setStatus(`Could not copy debug report: ${error.message}`, "error");
+  }
+}
+
+// Copies the detection-fallback telemetry as CSV (paste into a spreadsheet) so
+// you can see which senders/carriers most often need manual cropping.
+async function copyFailureLog() {
+  try {
+    const data = await chrome.storage?.local?.get("labelFailureLog");
+    const log = Array.isArray(data?.labelFailureLog) ? data.labelFailureLog : [];
+    if (!log.length) {
+      if (els.debugReportStatus) els.debugReportStatus.textContent = "No detection fallbacks logged yet.";
+      setStatus("No detection fallbacks logged yet.");
+      return;
+    }
+    const csv = ["timestamp,sender,carrier,reason,confidence,file"]
+      .concat(log.map((e) =>
+        [e.at, e.sender, e.carrier, e.reason, e.confidence, e.fileName]
+          .map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",")))
+      .join("\n");
+    await navigator.clipboard.writeText(csv);
+    if (els.debugReportStatus) els.debugReportStatus.textContent = `Failure log copied (${log.length} entries).`;
+    setStatus(`Failure log copied (${log.length} entries).`);
+  } catch (error) {
+    setStatus(`Could not copy failure log: ${error.message}`, "error");
   }
 }
 
@@ -579,7 +610,7 @@ async function clearOldLabelDownloads(options = {}) {
 
 function isSupportedDownload(download) {
   if (!download?.filename || download.exists === false) return false;
-  return /\.(pdf|png|jpe?g|gif)$/i.test(download.filename);
+  return /\.(pdf|png|jpe?g|gif|hei[cf])$/i.test(download.filename);
 }
 
 function isAfterDownloadsClearedAt(download) {
@@ -871,12 +902,14 @@ function cleanMimeType(value) {
 function filenameForContextLabel(value, type) {
   const raw = basename(value).split(/[?#]/)[0] || "sent-label";
   const clean = raw.replace(/[<>:"|?*\x00-\x1f]/g, "-") || "sent-label";
-  if (/\.(pdf|png|jpe?g|gif)$/i.test(clean)) return clean;
+  if (/\.(pdf|png|jpe?g|gif|hei[cf])$/i.test(clean)) return clean;
 
   if (type === "application/pdf") return `${clean}.pdf`;
   if (type === "image/png") return `${clean}.png`;
   if (type === "image/jpeg") return `${clean}.jpg`;
   if (type === "image/gif") return `${clean}.gif`;
+  if (type === "image/heic") return `${clean}.heic`;
+  if (type === "image/heif") return `${clean}.heif`;
   return clean;
 }
 
@@ -946,6 +979,8 @@ function mimeTypeFromName(name) {
   if (lower.endsWith(".png")) return "image/png";
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
   if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".heic")) return "image/heic";
+  if (lower.endsWith(".heif")) return "image/heif";
   return "application/octet-stream";
 }
 
@@ -1085,7 +1120,7 @@ async function recentDraggedLabelForUrl(url) {
 function isSupportedFile(file) {
   const name = file.name.toLowerCase();
   return LabelExtractorConfig.SUPPORTED_TYPES.includes(file.type)
-    || [".pdf", ".png", ".jpg", ".jpeg", ".gif"].some((ext) => name.endsWith(ext));
+    || [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".heic", ".heif"].some((ext) => name.endsWith(ext));
 }
 
 async function normalizeFileForExtraction(file) {
@@ -1176,6 +1211,13 @@ async function extractSelectedFile() {
       ? `${twinCount} labels found - print each one from this screen.`
       : candidates.length ? "Ready to print." : "No label candidates found - try another file or crop manually.");
     if (candidates.length) resetInactivityTimer();
+
+    // Telemetry: note cases where detection didn't cleanly nail the label.
+    const topResult = candidates[0];
+    const detectionFellBack = !topResult
+      || Boolean(topResult.needsCrop)
+      || /fallback/i.test(topResult.localReason || "");
+    if (detectionFellBack) logDetectionFallback(topResult, normalizedFile.name);
   } catch (error) {
     if (runId !== state.extractionRunId) return;
     const message = error.message || "Unknown error";
@@ -1291,6 +1333,8 @@ function isLikelyPartialLocalDetection(result) {
 function localVariantName(result) {
   if (result.reason === "embedded-twin-label") return result.variantName || `Label ${result.twinLabelIndex || 1} of ${result.twinLabelCount || 2}`;
   const page = Number(result.pageIndex || 0) + 1;
+  if (result.reason === "embedded-usps-label") return `USPS embedded label page ${page}`;
+  if (result.reason === "fold-here-label") return `Label below FOLD HERE page ${page}`;
   if (result.reason === "solid-border") return `Local label page ${page}`;
   if (result.reason === "keywords") return `Carrier text label page ${page}`;
   if (result.reason === "text-label-page") return `Text label page ${page}`;
@@ -2016,6 +2060,28 @@ function scheduleModelWarmup(delayMs = 2500) {
   setTimeout(() => {
     window.LabelExtractorModelDetector.warmUp().catch(() => {});
   }, delayMs);
+}
+
+// Quietly record when detection couldn't produce a clean label and fell back to
+// a crop/manual variant (or found nothing). Over time this reveals which senders
+// or carriers need a dedicated detection rule. View it via lab mode > Copy failure log.
+async function logDetectionFallback(label, fileName) {
+  if (!chrome.storage?.local) return;
+  try {
+    const sender = await getStoredSenderInfo();
+    const entry = {
+      at: new Date().toISOString(),
+      sender: sender?.email || sender?.name || "",
+      carrier: label?.carrier || "",
+      reason: label ? (label.localReason || "unknown") : "no-candidates",
+      confidence: label ? Number(label.confidence || 0) : 0,
+      fileName: fileName || ""
+    };
+    const data = await chrome.storage.local.get("labelFailureLog");
+    const log = Array.isArray(data.labelFailureLog) ? data.labelFailureLog : [];
+    log.push(entry);
+    await chrome.storage.local.set({ labelFailureLog: log.slice(-300) });
+  } catch (_) {}
 }
 
 function markActiveDownloadPrinted() {
