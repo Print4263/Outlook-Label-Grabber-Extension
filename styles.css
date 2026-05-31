@@ -846,13 +846,20 @@ h2 {
 }
 
 .manual-crop-tip {
-  margin: 0;
   padding: 10px 12px;
   border-radius: 10px;
   background: #fff7ed;
   color: #9a3412;
   font-size: 13px;
   line-height: 1.35;
+}
+
+.manual-crop-tip p {
+  margin: 0;
+}
+
+.manual-crop-tip p + p {
+  margin-top: 4px;
 }
 
 .multi-label-notice {
