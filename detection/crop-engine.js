@@ -103,13 +103,21 @@
   }
 
   function expandRect(rect, canvas, ratio, options = {}) {
-    const growX = Math.max(CROP_SAFETY_MIN_PADDING, rect.width * ratio);
-    const growLeft = growX + rect.width * CROP_SAFETY_LEFT_EXTRA_RATIO;
-    const growRight = growX + rect.width * CROP_SAFETY_RIGHT_EXTRA_RATIO;
-    const growY = Math.max(CROP_SAFETY_MIN_PADDING, rect.height * ratio);
-    const growTop = growY + rect.height * CROP_SAFETY_TOP_EXTRA_RATIO;
+    const paddingRatio = Number.isFinite(options.paddingRatio) ? options.paddingRatio : ratio;
+    const minPadding = Number.isFinite(options.minPadding) ? options.minPadding : CROP_SAFETY_MIN_PADDING;
+    const leftExtraRatio = Number.isFinite(options.leftExtraRatio) ? options.leftExtraRatio : CROP_SAFETY_LEFT_EXTRA_RATIO;
+    const rightExtraRatio = Number.isFinite(options.rightExtraRatio) ? options.rightExtraRatio : CROP_SAFETY_RIGHT_EXTRA_RATIO;
+    const topExtraRatio = Number.isFinite(options.topExtraRatio) ? options.topExtraRatio : CROP_SAFETY_TOP_EXTRA_RATIO;
+    const bottomExtraRatio = options.replaceBottomExtraRatio
+      ? Number(options.bottomExtraRatio || 0)
+      : CROP_SAFETY_BOTTOM_EXTRA_RATIO + Number(options.bottomExtraRatio || 0);
+    const growX = Math.max(minPadding, rect.width * paddingRatio);
+    const growLeft = growX + rect.width * leftExtraRatio;
+    const growRight = growX + rect.width * rightExtraRatio;
+    const growY = Math.max(minPadding, rect.height * paddingRatio);
+    const growTop = growY + rect.height * topExtraRatio;
     const growBottom = growY + rect.height * (
-      CROP_SAFETY_BOTTOM_EXTRA_RATIO + Number(options.bottomExtraRatio || 0)
+      bottomExtraRatio
     );
     return {
       x: rect.x - growLeft,

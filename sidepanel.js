@@ -1982,10 +1982,12 @@ async function expandToSourcePage(index) {
     const currentCacheKey = fileCacheKey(state.file);
     const targetPageIndex = Math.max(0, (label.sourcePage || 1) - 1);
     let sourceCanvas = null;
+    let sourcePageText = "";
 
     if (state.cachedPages?.length && state.cachedPagesKey === currentCacheKey) {
       const page = state.cachedPages.find((p) => p.pageIndex === targetPageIndex) || state.cachedPages[0];
       sourceCanvas = page?.canvas || null;
+      sourcePageText = page?.text || "";
     }
 
     if (!sourceCanvas) {
@@ -2001,6 +2003,7 @@ async function expandToSourcePage(index) {
         state.cachedPagesKey = fileCacheKey(normalizedFile);
         const page = pages.find((p) => p.pageIndex === targetPageIndex) || pages[0];
         sourceCanvas = page?.canvas || null;
+        sourcePageText = page?.text || "";
       } else {
         const page = await window.LabelExtractorPNG.process({
           blob: normalizedFile,
@@ -2018,6 +2021,10 @@ async function expandToSourcePage(index) {
       return;
     }
 
+    const suggestedCropRect = snapCropRectToSource(
+      window.LabelExtractorDetector?.suggestLabelRect?.(sourceCanvas, sourcePageText),
+      sourceCanvas
+    );
     const dataUrl = sourceCanvas.toDataURL("image/png");
     const fullPageLabel = {
       ...label,
@@ -2027,6 +2034,7 @@ async function expandToSourcePage(index) {
       height: sourceCanvas.height,
       variantName: `Full page ${targetPageIndex + 1} — crop to label`,
       confidence: 0.5,
+      suggestedCropRect,
       warnings: ["Full source page shown — drag the crop handles to the label area then click Apply crop."],
       localReason: null
     };
@@ -2036,7 +2044,9 @@ async function expandToSourcePage(index) {
     renderResults({ labels: state.results });
     updateSheetPreview();
     openCropEditor(0);
-    setStatus("Full page loaded — drag the crop box to the label then click Apply crop.");
+    setStatus(suggestedCropRect
+      ? "Full page loaded - crop box snapped to the likely label. Adjust if needed, then click Apply crop."
+      : "Full page loaded - drag the crop box to the label then click Apply crop.");
   } catch (error) {
     setStatus(`Expand failed: ${error.message}`);
   } finally {
@@ -2484,6 +2494,7 @@ function openCropEditor(index) {
   resetCropBox();
   els.cropImage.src = labelToDataUrl(state.results[index]);
   els.cropEditor.hidden = false;
+  els.cropImage.addEventListener("load", snapCropBoxToCurrentImage, { once: true });
 
   if (usesTallCropSource(state.results[index])) {
     els.cropImage.addEventListener("load", () => {
@@ -2506,6 +2517,26 @@ function openCropEditor(index) {
   });
 }
 
+function snapCropBoxToCurrentImage() {
+  const label = state.results[state.cropTargetIndex];
+  if (!label || label.suggestedCropRect) return;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = els.cropImage.naturalWidth || els.cropImage.width;
+  canvas.height = els.cropImage.naturalHeight || els.cropImage.height;
+  if (!canvas.width || !canvas.height) return;
+
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(els.cropImage, 0, 0, canvas.width, canvas.height);
+  const rect = window.LabelExtractorDetector?.suggestLabelRect?.(canvas, label.pageText || "");
+  const snapped = snapCropRectToSource(rect, canvas);
+  if (!snapped) return;
+
+  state.cropRect = snapped;
+  renderCropBox();
+  setStatus("Crop box snapped to the likely label. Adjust if needed, then click Apply crop.");
+}
+
 function closeCropEditor() {
   els.cropEditor.hidden = true;
   state.cropTargetIndex = -1;
@@ -2515,10 +2546,28 @@ function closeCropEditor() {
 function resetCropBox() {
   const label = state.results[state.cropTargetIndex];
 
-  state.cropRect = usesTallCropSource(label)
+  state.cropRect = label?.suggestedCropRect
+    ? { ...label.suggestedCropRect }
+    : usesTallCropSource(label)
     ? initialFallbackCropRect(label)
     : { x: 0.05, y: 0.05, width: 0.9, height: 0.9 };
   renderCropBox();
+}
+
+function snapCropRectToSource(rect, canvas) {
+  if (!rect || !canvas?.width || !canvas?.height) return null;
+  const padX = Math.max(12, Number(rect.width || 0) * 0.035);
+  const padY = Math.max(12, Number(rect.height || 0) * 0.035);
+  const left = clamp(Number(rect.x || 0) - padX, 0, canvas.width - 1);
+  const top = clamp(Number(rect.y || 0) - padY, 0, canvas.height - 1);
+  const right = clamp(Number(rect.x || 0) + Number(rect.width || 0) + padX, left + 1, canvas.width);
+  const bottom = clamp(Number(rect.y || 0) + Number(rect.height || 0) + padY, top + 1, canvas.height);
+  return {
+    x: left / canvas.width,
+    y: top / canvas.height,
+    width: (right - left) / canvas.width,
+    height: (bottom - top) / canvas.height
+  };
 }
 
 function initialFallbackCropRect(label) {

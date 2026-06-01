@@ -29,7 +29,7 @@
   const LABEL_FRAME_MAX_ASPECT = 2.4;
   const ONLINE_RETURN_LABEL_ASPECT = 1200 / 1800;
   const ONLINE_RETURN_TOP_TRIM_RATIO = 0;
-  const ONLINE_RETURN_LEFT_PAD_RATIO = 0.12;
+  const ONLINE_RETURN_BOTTOM_PAD_RATIO = 0.12;
   const dashedBorderCache = new WeakMap();
   const barcodeRankCache = new WeakMap();
   const BARCODE_EXCLUSION_PENALTY = -5;
@@ -44,14 +44,18 @@
     if (!pages.length) return [];
 
     const candidates = [];
+    const onlineReturnCenterDocument = isOnlineReturnCenterDocument(pages);
 
-    const embeddedUspsHit = await embeddedUspsLabelDetection(pages);
+    const embeddedUspsHit = onlineReturnCenterDocument ? null : await embeddedUspsLabelDetection(pages);
     if (embeddedUspsHit) candidates.push(embeddedUspsHit);
 
     candidates.push(...await dashedBorderLabelDetections(pages));
     candidates.push(...await solidBorderLabelDetections(pages));
 
     const foldHereHit = await foldHereLabelDetection(pages);
+    if (foldHereHit && isUpsLabelText(findPage(pages, foldHereHit.pageIndex)?.text)) {
+      return [foldHereHit];
+    }
     if (foldHereHit) candidates.push(foldHereHit);
 
     const labelSizedHit = await labelSizedPageDetection(pages);
@@ -276,12 +280,15 @@
 
   function cropOptionsForPage(page) {
     const text = String(page?.text || "").toUpperCase();
-    const isUspsPdf = page?.type === "pdf" && /USPS|POSTAL SERVICE|GROUND ADVANTAGE|PRIORITY MAIL/.test(text);
+    const isOnlineReturnForm = isOnlineReturnAuthorizationSlip(text);
+    const isUspsPdf = page?.type === "pdf"
+      && !isOnlineReturnForm
+      && /USPS|POSTAL SERVICE|GROUND ADVANTAGE|PRIORITY MAIL/.test(text);
     return isUspsPdf ? { bottomExtraRatio: 0.035 } : {};
   }
 
-  function cropPageCanvas(page, rect) {
-    return window.LabelExtractorCrop.cropCanvas(page.canvas, rect, cropOptionsForPage(page));
+  function cropPageCanvas(page, rect, options = {}) {
+    return window.LabelExtractorCrop.cropCanvas(page.canvas, rect, { ...cropOptionsForPage(page), ...options });
   }
 
   function autoCropPageCanvas(page, padding = 6) {
@@ -405,13 +412,23 @@
 
   async function dashedBorderLabelDetections(pages) {
     const detections = [];
+    const onlineReturnCenterDocument = isOnlineReturnCenterDocument(pages);
     for (const page of pages) {
-      const knownOnlineReturnForm = isOnlineReturnAuthorizationSlip(page?.text);
+      if (onlineReturnCenterDocument && isOnlineReturnAuthorizationSlip(page?.text)) continue;
+      const knownOnlineReturnForm = onlineReturnCenterDocument && isOnlineReturnMailingLabelPage(page?.text);
       const rect = trimKnownDashedBorderForm(detectDashedBorder(page.canvas), page, knownOnlineReturnForm);
       if (!rect) continue;
       const areaRatio = (rect.width * rect.height) / Math.max(1, page.canvas.width * page.canvas.height);
       if (areaRatio < 0.08) continue;
-      let label = await cropPageCanvas(page, rect);
+      let label = await cropPageCanvas(page, rect, knownOnlineReturnForm ? {
+        paddingRatio: 0.018,
+        minPadding: 3,
+        leftExtraRatio: 0,
+        rightExtraRatio: 0,
+        topExtraRatio: 0,
+        bottomExtraRatio: 0,
+        replaceBottomExtraRatio: true
+      } : {});
       if (knownOnlineReturnForm && label.width > label.height) {
         label = await window.LabelExtractorCrop.rotateDataUrl(label.dataUrl, 90);
       }
@@ -436,7 +453,7 @@
 
     const landscapeLabelHeight = Math.round(rect.width * ONLINE_RETURN_LABEL_ASPECT);
     const trimTop = Math.round(landscapeLabelHeight * ONLINE_RETURN_TOP_TRIM_RATIO);
-    const padBottom = Math.round(landscapeLabelHeight * ONLINE_RETURN_LEFT_PAD_RATIO);
+    const padBottom = Math.round(landscapeLabelHeight * ONLINE_RETURN_BOTTOM_PAD_RATIO);
 
     return {
       ...rect,
@@ -448,6 +465,15 @@
   function isOnlineReturnAuthorizationSlip(text) {
     const value = String(text || "").toUpperCase();
     return value.includes("RETURN AUTHORIZATION SLIP");
+  }
+
+  function isOnlineReturnMailingLabelPage(text) {
+    const value = String(text || "").toUpperCase();
+    return value.includes("RETURN MAILING LABEL");
+  }
+
+  function isOnlineReturnCenterDocument(pages) {
+    return pages.some((page) => isOnlineReturnAuthorizationSlip(page?.text));
   }
 
   async function solidBorderLabelDetections(pages) {
@@ -891,8 +917,10 @@
 
   async function embeddedLabelPageFallbacks(pages) {
     const detections = [];
+    const onlineReturnCenterDocument = isOnlineReturnCenterDocument(pages);
 
     for (const page of pages) {
+      if (onlineReturnCenterDocument && isOnlineReturnAuthorizationSlip(page?.text)) continue;
       const regions = findBarcodeRegions(page.canvas);
       const text = String(page.text || "").toUpperCase();
       const looksLikeEmbeddedReturnPage = Number(page.embeddedImageCount || 0) > 0
@@ -1200,6 +1228,90 @@
     return regions.length ? unionRects(regions) : null;
   }
 
+  function suggestLabelRect(canvas, pageText = "") {
+    if (!canvas) return null;
+    const barcodeRegions = findBarcodeRegionsInGrid(canvas, 8, 12, 22);
+    if (!barcodeRegions.length) return detectDashedBorder(canvas) || detectSolidLabelBorder(canvas);
+
+    const barcodeBox = unionRects(barcodeRegions);
+    const candidates = [
+      { rect: detectDashedBorder(canvas), kind: "dashed-border" },
+      { rect: detectSolidLabelBorder(canvas), kind: "solid-border" },
+      { rect: labelShapedRectAroundBarcode(barcodeBox, canvas, "portrait"), kind: "portrait-4x6" },
+      { rect: labelShapedRectAroundBarcode(barcodeBox, canvas, "landscape"), kind: "landscape-4x6" }
+    ].filter((candidate) => candidate.rect && rectContainsAnyBarcode(candidate.rect, barcodeRegions));
+
+    return candidates
+      .map((candidate) => ({
+        ...candidate,
+        score: snapCandidateScore(candidate.rect, candidate.kind, barcodeRegions, canvas, pageText)
+      }))
+      .sort((a, b) => b.score - a.score)[0]?.rect || null;
+  }
+
+  function labelShapedRectAroundBarcode(barcodeBox, canvas, orientation) {
+    const landscape = orientation === "landscape";
+    const targetAspect = landscape ? 6 / 4 : 4 / 6;
+    let width = landscape
+      ? Math.max(barcodeBox.width * 1.35, canvas.width * 0.42)
+      : Math.max(barcodeBox.width * 1.7, canvas.width * 0.34);
+    let height = width / targetAspect;
+
+    if (height < barcodeBox.height * 2.6) {
+      height = barcodeBox.height * 2.6;
+      width = height * targetAspect;
+    }
+    if (width > canvas.width * 0.96) {
+      width = canvas.width * 0.96;
+      height = width / targetAspect;
+    }
+    if (height > canvas.height * 0.96) {
+      height = canvas.height * 0.96;
+      width = height * targetAspect;
+    }
+
+    const centerX = barcodeBox.x + barcodeBox.width / 2;
+    const centerY = barcodeBox.y + barcodeBox.height / 2;
+    const x = clamp(centerX - width / 2, 0, canvas.width - width);
+    const y = clamp(centerY - height * 0.72, 0, canvas.height - height);
+    return { x, y, width, height };
+  }
+
+  function snapCandidateScore(rect, kind, barcodeRegions, canvas, pageText) {
+    const aspect = rect.width / Math.max(1, rect.height);
+    const aspectError = Math.min(Math.abs(aspect - 4 / 6), Math.abs(aspect - 6 / 4));
+    const areaRatio = rect.width * rect.height / Math.max(1, canvas.width * canvas.height);
+    const barcodeCoverage = barcodeRegions.filter((region) => rectContainsAnyBarcode(rect, [region])).length;
+    const blackLineScore = borderLineScore(rect, canvas);
+    const borderBonus = kind.includes("border") && blackLineScore >= 0.28 ? 7 : 0;
+    const textBonus = /USPS|UPS|FEDEX|TRACKING|SHIP TO|SHIP FROM|GROUND ADVANTAGE|PRIORITY MAIL/i.test(pageText || "") ? 2 : 0;
+    const areaPenalty = areaRatio < 0.08 || areaRatio > 0.92 ? 4 : 0;
+    return barcodeCoverage * 2 + borderBonus + blackLineScore * 4 + textBonus - aspectError * 5 - areaPenalty;
+  }
+
+  function borderLineScore(rect, canvas) {
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const left = clamp(Math.round(rect.x), 0, canvas.width - 1);
+    const right = clamp(Math.round(rect.x + rect.width), 0, canvas.width - 1);
+    const top = clamp(Math.round(rect.y), 0, canvas.height - 1);
+    const bottom = clamp(Math.round(rect.y + rect.height), 0, canvas.height - 1);
+    let dark = 0;
+    let sampled = 0;
+
+    for (let x = left; x <= right; x += 3) {
+      dark += isDark(data, (top * canvas.width + x) * 4) ? 1 : 0;
+      dark += isDark(data, (bottom * canvas.width + x) * 4) ? 1 : 0;
+      sampled += 2;
+    }
+    for (let y = top; y <= bottom; y += 3) {
+      dark += isDark(data, (y * canvas.width + left) * 4) ? 1 : 0;
+      dark += isDark(data, (y * canvas.width + right) * 4) ? 1 : 0;
+      sampled += 2;
+    }
+    return dark / Math.max(1, sampled);
+  }
+
   function barcodeTransitionScore(data, imageWidth, x, y, width, height) {
     let rowsSampled = 0;
     let totalTransitions = 0;
@@ -1249,6 +1361,7 @@
     detectPngPages,
     detectAllPngCandidates,
     detectDashedBorder,
+    suggestLabelRect,
     findBarcodeRegions
   };
 })();
