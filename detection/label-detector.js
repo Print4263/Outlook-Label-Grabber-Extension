@@ -31,7 +31,10 @@
   const ONLINE_RETURN_TOP_TRIM_RATIO = 0;
   const ONLINE_RETURN_BOTTOM_PAD_RATIO = 0.12;
   const dashedBorderCache = new WeakMap();
-  const barcodeRankCache = new WeakMap();
+  // Memoizes the default-grid barcode scan per canvas. The cascade asks the same
+  // page.canvas for its barcode regions from many detectors; without this each
+  // call repeats a full getImageData + transition scan.
+  const barcodeRegionCache = new WeakMap();
   const BARCODE_EXCLUSION_PENALTY = -5;
   const EMBEDDED_USPS_BORDER_OVERRIDE_CONFIDENCE = 0.97;
 
@@ -563,11 +566,7 @@
   // cropRect) and pages with no detectable barcode are left untouched, so
   // legitimate labels are never penalized.
   function pageBarcodeRegions(canvas) {
-    if (!canvas) return [];
-    if (barcodeRankCache.has(canvas)) return barcodeRankCache.get(canvas);
-    const regions = findBarcodeRegions(canvas);
-    barcodeRankCache.set(canvas, regions);
-    return regions;
+    return findBarcodeRegions(canvas);
   }
 
   function rectContainsAnyBarcode(rect, regions) {
@@ -1200,7 +1199,12 @@
   }
 
   function findBarcodeRegions(canvas) {
-    return findBarcodeRegionsInGrid(canvas, 6, 8, 30);
+    if (!canvas) return [];
+    const cached = barcodeRegionCache.get(canvas);
+    if (cached) return cached;
+    const regions = findBarcodeRegionsInGrid(canvas, 6, 8, 30);
+    barcodeRegionCache.set(canvas, regions);
+    return regions;
   }
 
   function findBarcodeRegionsInGrid(canvas, cols, rows, threshold) {

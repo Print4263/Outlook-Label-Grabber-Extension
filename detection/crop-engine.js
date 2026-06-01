@@ -11,6 +11,50 @@
   const CROP_SAFETY_MIN_PADDING = 16;
   const CONTENT_SCAN_ROW_STEP = 2;
 
+  // How far outside the threshold-detected bounds to rescue faint edge content
+  // (a thin barcode end, a single address line) that the row/col thresholds drop.
+  const BORDER_RESCUE_PIXELS = 15;
+
+  // Padding presets. Each sets the ratio knobs consumed by expandRect(); any
+  // explicit option the caller passes still overrides the preset value because
+  // resolveCropOptions() layers the caller's options on top.
+  const CROP_PRESETS = {
+    tight: {
+      paddingRatio: 0.06,
+      minPadding: 8,
+      leftExtraRatio: 0.015,
+      rightExtraRatio: 0.005,
+      topExtraRatio: 0.03,
+      bottomExtraRatio: 0,
+      replaceBottomExtraRatio: true
+    },
+    relaxed: {
+      paddingRatio: 0.16,
+      minPadding: 24,
+      leftExtraRatio: 0.05,
+      rightExtraRatio: 0.02,
+      topExtraRatio: 0.09,
+      bottomExtraRatio: 0.05,
+      replaceBottomExtraRatio: true
+    },
+    // Extra bottom room for USPS Intelligent Mail barcode / endorsement block.
+    "carrier-usps": {
+      bottomExtraRatio: 0.05
+    }
+  };
+
+  function resolveCropOptions(options = {}) {
+    const presetName = options.preset;
+    if (!presetName) return options;
+    const preset = CROP_PRESETS[presetName];
+    if (!preset) {
+      console.warn(`[crop-engine] unknown preset "${presetName}", ignoring`);
+      return options;
+    }
+    // Preset is the base; caller's explicit options win.
+    return { ...preset, ...options };
+  }
+
   function imageDataToCanvas(imageData) {
     const canvas = document.createElement("canvas");
     canvas.width = imageData.width;
@@ -20,12 +64,14 @@
   }
 
   async function autoCropCanvas(sourceCanvas, padding = 6, options = {}) {
+    const resolved = resolveCropOptions(options);
     const ctx = sourceCanvas.getContext("2d", { willReadFrequently: true });
     const { width, height } = sourceCanvas;
     const data = ctx.getImageData(0, 0, width, height).data;
-    const bounds = findContentBounds(data, width, height);
+    const bounds = findContentBounds(data, width, height, resolved);
 
     if (!bounds) {
+      console.warn("[crop-engine] no content detected (blank or all-white image); returning source uncropped");
       return canvasToLabel(sourceCanvas);
     }
 
@@ -34,10 +80,10 @@
       y: Math.max(0, bounds.top - padding),
       width: Math.min(width - Math.max(0, bounds.left - padding), bounds.right - bounds.left + 1 + padding * 2),
       height: Math.min(height - Math.max(0, bounds.top - padding), bounds.bottom - bounds.top + 1 + padding * 2)
-    }, options);
+    }, resolved);
   }
 
-  function findContentBounds(data, width, height) {
+  function findContentBounds(data, width, height, options = {}) {
     const rowCounts = new Uint32Array(height);
     const colCounts = new Uint32Array(width);
     const whiteThreshold = 246;
@@ -56,13 +102,41 @@
 
     const rowThreshold = Math.max(2, Math.floor(width * 0.002));
     const colThreshold = Math.max(2, Math.floor(height * 0.001));
-    const top = firstIndexAtLeast(rowCounts, rowThreshold);
-    const bottom = lastIndexAtLeast(rowCounts, rowThreshold);
-    const left = firstIndexAtLeast(colCounts, colThreshold);
-    const right = lastIndexAtLeast(colCounts, colThreshold);
+    let top = firstIndexAtLeast(rowCounts, rowThreshold);
+    let bottom = lastIndexAtLeast(rowCounts, rowThreshold);
+    let left = firstIndexAtLeast(colCounts, colThreshold);
+    let right = lastIndexAtLeast(colCounts, colThreshold);
 
     if (left < 0 || right < 0 || top < 0 || bottom < 0 || left >= right || top >= bottom) return null;
+
+    // Border rescue: the row/col thresholds intentionally ignore very faint
+    // edges, but a barcode end or a single address line just outside the
+    // detected box should not be clipped. Re-include any line within
+    // borderPixels that holds even one content pixel.
+    const borderScan = options.borderScan !== false;
+    if (borderScan) {
+      const reach = Number.isFinite(options.borderPixels) ? options.borderPixels : BORDER_RESCUE_PIXELS;
+      top = extendOutward(rowCounts, top, -1, reach);
+      bottom = extendOutward(rowCounts, bottom, 1, reach);
+      left = extendOutward(colCounts, left, -1, reach);
+      right = extendOutward(colCounts, right, 1, reach);
+    }
+
     return { left, right, top, bottom };
+  }
+
+  // Walk outward from an edge index by up to `reach`, advancing the edge to the
+  // farthest line that still carries content (count >= 1). Stops at the first
+  // fully-empty line so it never runs across a gap into unrelated content.
+  function extendOutward(counts, edge, direction, reach) {
+    let result = edge;
+    for (let step = 1; step <= reach; step += 1) {
+      const idx = edge + direction * step;
+      if (idx < 0 || idx >= counts.length) break;
+      if (counts[idx] < 1) break;
+      result = idx;
+    }
+    return result;
   }
 
   function firstIndexAtLeast(values, threshold) {
@@ -80,7 +154,8 @@
   }
 
   async function cropCanvas(sourceCanvas, rect, options = {}) {
-    const normalized = normalizeRect(expandRect(rect, sourceCanvas, CROP_SAFETY_PADDING_RATIO, options), sourceCanvas);
+    const resolved = resolveCropOptions(options);
+    const normalized = normalizeRect(expandRect(rect, sourceCanvas, CROP_SAFETY_PADDING_RATIO, resolved), sourceCanvas);
     const { x, y, width, height } = normalized;
 
     const canvas = document.createElement("canvas");
