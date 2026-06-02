@@ -234,8 +234,15 @@ function initUiScale() {
 }
 
 // Largest 5% step that keeps the 720px-min content inside the current window.
+// Measure with zoom temporarily neutralized so the result is the same whether
+// Fit is pressed at 100% or while already scaled down (no paint happens between
+// the reset and restore, so there's no visible flicker).
 function autoFitScale() {
+  const root = document.documentElement;
+  const prevZoom = root.style.zoom;
+  root.style.zoom = "1";
   const width = window.innerWidth || 720;
+  root.style.zoom = prevZoom;
   const pct = Math.floor((width / 720) * 20) * 5;
   return clamp(pct, UI_SCALE_MIN, 100);
 }
@@ -1352,7 +1359,6 @@ function localDetectionToLabel(result) {
     sourcePage: Number(result.pageIndex || 0) + 1,
     pageCount: Number(result.pageCount || 0),
     localReason: result.reason,
-    localCropRect: result.cropRect || null,
     needsCrop: likelyPartial || Boolean(result.needsCrop),
     twinLabelIndex: result.twinLabelIndex || null,
     twinLabelCount: result.twinLabelCount || null
@@ -1588,7 +1594,6 @@ function fileFallbackLabelFromPage(page) {
     sourcePage: pageNumber,
     pageCount: Number(page.pageCount || state.cachedPages.length),
     localReason: "file-page-fallback",
-    localCropRect: fallback.rect,
     pageText,
     needsCrop: true
   };
@@ -2093,11 +2098,13 @@ async function expandToSourcePage(index) {
     }
 
     if (!sourceCanvas) {
-      console.warn("[Label Extractor] Expand: no source canvas", {
-        cachedPages: state.cachedPages?.length || 0,
-        keyMatch: state.cachedPagesKey === currentCacheKey,
-        targetPageIndex
-      });
+      if (state.uiMode === "lab") {
+        console.warn("[Label Extractor] Expand: no source canvas", {
+          cachedPages: state.cachedPages?.length || 0,
+          keyMatch: state.cachedPagesKey === currentCacheKey,
+          targetPageIndex
+        });
+      }
       setStatus("Could not load source page. Try using Crop instead.");
       return;
     }
@@ -2129,7 +2136,7 @@ async function expandToSourcePage(index) {
       ? "Full page loaded - crop box snapped to the likely label. Adjust if needed, then click Apply crop."
       : "Full page loaded - drag the crop box to the label then click Apply crop.");
   } catch (error) {
-    console.error("[Label Extractor] Expand failed", error);
+    if (state.uiMode === "lab") console.error("[Label Extractor] Expand failed", error);
     setStatus(`Expand failed: ${error.message}`);
   } finally {
     els.extractButton.disabled = !state.file;
@@ -2784,6 +2791,10 @@ function labelFromCanvas(canvas, prior, variantName) {
     variantName,
     outputMimeType: "image/png",
     base64: dataUrl.split(",")[1],
+    // The canvas is the new image, so its dimensions are authoritative. Without
+    // this, a rotated/cropped label keeps its pre-change width/height.
+    width: canvas.width,
+    height: canvas.height,
     confidence: Math.max(prior.confidence || 0, 0.5),
     warnings: ["Manually adjusted in extension; review before printing."]
   };

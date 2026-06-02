@@ -1,7 +1,28 @@
 (function () {
   "use strict";
 
+  // pdf.min.js (~320 KB) is only needed for PDF labels, so load it on first use
+  // instead of at panel open. Image-only and idle sessions never pay for it.
+  // (test.html loads pdf.min.js itself, so window.pdfjsLib is already present there.)
+  let pdfJsLoadPromise = null;
+  function ensurePdfJsScript() {
+    if (window.pdfjsLib) return Promise.resolve();
+    if (pdfJsLoadPromise) return pdfJsLoadPromise;
+    pdfJsLoadPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = chrome.runtime.getURL("lib/pdf.min.js");
+      script.onload = () => resolve();
+      script.onerror = () => {
+        pdfJsLoadPromise = null;
+        reject(new Error("PDF reader could not load."));
+      };
+      document.head.append(script);
+    });
+    return pdfJsLoadPromise;
+  }
+
   async function loadPdfJs() {
+    await ensurePdfJsScript();
     if (!window.pdfjsLib) throw new Error("PDF reader could not start.");
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("lib/pdf.worker.min.js");
     return window.pdfjsLib;
