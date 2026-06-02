@@ -35,7 +35,21 @@
   // page.canvas for its barcode regions from many detectors; without this each
   // call repeats a full getImageData + transition scan.
   const barcodeRegionCache = new WeakMap();
+  // Memoizes the raw RGBA pixel buffer per canvas. getImageData on a full source
+  // page is one of the most expensive operations in the cascade, and several
+  // detectors (border scans, barcode grid, snap scoring) each re-read the same
+  // canvas. Share one read instead.
+  const canvasDataCache = new WeakMap();
   const BARCODE_EXCLUSION_PENALTY = -5;
+
+  function getCanvasData(canvas) {
+    let data = canvasDataCache.get(canvas);
+    if (data) return data;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    canvasDataCache.set(canvas, data);
+    return data;
+  }
   const EMBEDDED_USPS_BORDER_OVERRIDE_CONFIDENCE = 0.97;
 
   async function detectPdfPages(pages) {
@@ -834,9 +848,8 @@
   }
 
   function findLowerContentRect(canvas, barcodeRegions) {
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     const { width, height } = canvas;
-    const data = ctx.getImageData(0, 0, width, height).data;
+    const data = getCanvasData(canvas);
     const lowerStart = Math.floor(height * 0.42);
     const whiteThreshold = 245;
     let left = width;
@@ -963,9 +976,8 @@
   }
 
   function detectSolidLabelBorder(canvas) {
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     const { width, height } = canvas;
-    const data = ctx.getImageData(0, 0, width, height).data;
+    const data = getCanvasData(canvas);
     const rowThreshold = width * 0.28;
     const colThreshold = height * 0.22;
     const rows = [];
@@ -1046,9 +1058,8 @@
   }
 
   function detectDashedBorderUncached(canvas) {
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const { width, height, data } = image;
+    const { width, height } = canvas;
+    const data = getCanvasData(canvas);
     const horizontalLines = [];
     const verticalLines = [];
     const minLine = Math.round(Math.min(width, height) * 0.35);
@@ -1208,9 +1219,8 @@
   }
 
   function findBarcodeRegionsInGrid(canvas, cols, rows, threshold) {
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     const { width, height } = canvas;
-    const data = ctx.getImageData(0, 0, width, height).data;
+    const data = getCanvasData(canvas);
     const regions = [];
 
     for (let row = 0; row < rows; row += 1) {
@@ -1294,8 +1304,7 @@
   }
 
   function borderLineScore(rect, canvas) {
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const data = getCanvasData(canvas);
     const left = clamp(Math.round(rect.x), 0, canvas.width - 1);
     const right = clamp(Math.round(rect.x + rect.width), 0, canvas.width - 1);
     const top = clamp(Math.round(rect.y), 0, canvas.height - 1);
@@ -1316,25 +1325,42 @@
     return dark / Math.max(1, sampled);
   }
 
+  // Barcodes read as a run of dark/light transitions perpendicular to their bars.
+  // A normal portrait label scans best horizontally; a label rotated 90° (common
+  // on UPS/return PDFs where the label image is placed sideways) scans best
+  // vertically. Score both directions and keep the stronger one so a rotated
+  // label is still recognized instead of falling through to a manual crop.
   function barcodeTransitionScore(data, imageWidth, x, y, width, height) {
-    let rowsSampled = 0;
-    let totalTransitions = 0;
-    const rowStep = Math.max(1, Math.floor(height / 20));
+    return Math.max(
+      directionalTransitionScore(data, imageWidth, x, y, width, height, "horizontal"),
+      directionalTransitionScore(data, imageWidth, x, y, width, height, "vertical")
+    );
+  }
 
-    for (let yy = y; yy < y + height; yy += rowStep) {
+  function directionalTransitionScore(data, imageWidth, x, y, width, height, axis) {
+    const horizontal = axis === "horizontal";
+    const lineCount = horizontal ? height : width;
+    const scanLength = horizontal ? width : height;
+    const step = Math.max(1, Math.floor(lineCount / 20));
+    let linesSampled = 0;
+    let totalTransitions = 0;
+
+    for (let line = 0; line < lineCount; line += step) {
       let transitions = 0;
       let previous = null;
-      for (let xx = x; xx < x + width; xx += 1) {
-        const i = (yy * imageWidth + xx) * 4;
+      for (let pos = 0; pos < scanLength; pos += 1) {
+        const px = horizontal ? x + pos : x + line;
+        const py = horizontal ? y + line : y + pos;
+        const i = (py * imageWidth + px) * 4;
         const dark = data[i] + data[i + 1] + data[i + 2] < 360;
         if (previous !== null && dark !== previous) transitions += 1;
         previous = dark;
       }
-      totalTransitions += transitions / Math.max(1, width / 100);
-      rowsSampled += 1;
+      totalTransitions += transitions / Math.max(1, scanLength / 100);
+      linesSampled += 1;
     }
 
-    return totalTransitions / Math.max(1, rowsSampled);
+    return totalTransitions / Math.max(1, linesSampled);
   }
 
   function unionRects(rects) {

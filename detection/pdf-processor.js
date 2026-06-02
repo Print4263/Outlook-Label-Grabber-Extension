@@ -14,6 +14,18 @@
   const TWIN_LABEL_ACTIVE_RATIO = 0.018;
 
   // Keywords that indicate this page is likely a shipping label
+  // Twin-label splitting reads the same page canvas up to four times (two axis
+  // scans plus a per-band rescan). Share one getImageData read per canvas.
+  const pixelCache = new WeakMap();
+  function pixelsFor(canvas) {
+    let data = pixelCache.get(canvas);
+    if (data) return data;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    pixelCache.set(canvas, data);
+    return data;
+  }
+
   const LABEL_CUES = [
     "USPS TRACKING", "UPS TRACKING", "FEDEX TRACKING",
     "GROUND ADVANTAGE", "RETURN MAILING LABEL", "RETURN LABEL",
@@ -98,9 +110,14 @@
       const pages = [];
       if (renderQueue.length) {
         pages.push(await renderPageEntry(renderQueue[0], pdf.numPages));
-        const firstPass = await window.LabelExtractorDetector.detectPdfPages(pages);
-        if (pdf.numPages === 1 && Number(firstPass?.confidence || 0) >= STRONG_DETECTION_CONFIDENCE) {
-          return firstPass;
+        // A single-page PDF has nothing more to render, so a confident hit here
+        // lets us return immediately. (firstPass is only meaningful for one-page
+        // docs — running it for multi-page PDFs just wastes a detection pass.)
+        if (pdf.numPages === 1) {
+          const firstPass = await window.LabelExtractorDetector.detectPdfPages(pages);
+          if (Number(firstPass?.confidence || 0) >= STRONG_DETECTION_CONFIDENCE) {
+            return firstPass;
+          }
         }
       }
 
@@ -111,7 +128,11 @@
       const twinLabels = await splitTwinEmbeddedLabelPage(pages);
       if (twinLabels.length === 2) return twinLabels;
 
-      return window.LabelExtractorDetector.detectPdfPages(pages);
+      // Hand the rendered pages back without detecting here. The caller
+      // (runLocalDetector) runs detectPdfCandidates on these same pages, so
+      // running the full cascade here too would double the most expensive step —
+      // including ONNX model inference — on every multi-page PDF.
+      return { pages };
     } catch (error) {
       console.warn("[Label Extractor] PDF processing failed", error);
       return {
@@ -122,6 +143,28 @@
         error
       };
     }
+  }
+
+  // Render a single page to a canvas with no detection. Used by Expand, which
+  // just needs the raw source page regardless of what the detection cascade did.
+  async function renderPage(captured, pageIndex = 0) {
+    const pdfjsLib = await loadPdfJs();
+    const pdf = await pdfjsLib.getDocument({ data: captured.buffer.slice(0) }).promise;
+    const idx = Math.min(Math.max(0, Number(pageIndex) || 0), pdf.numPages - 1);
+    const page = await pdf.getPage(idx + 1);
+    let text = "";
+    try {
+      const textContent = await page.getTextContent();
+      text = textContent.items.map((item) => item.str).join(" ");
+    } catch (_) {}
+    return renderPageEntry({
+      pageIndex: idx,
+      page,
+      text,
+      embeddedImages: [],
+      embeddedImageCount: 0,
+      foldRatio: null
+    }, pdf.numPages);
   }
 
   async function renderPageEntry(entry, pageCount) {
@@ -297,9 +340,8 @@
   }
 
   function majorContentBands(canvas, axis) {
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     const { width, height } = canvas;
-    const data = ctx.getImageData(0, 0, width, height).data;
+    const data = pixelsFor(canvas);
     const primarySize = axis === "y" ? height : width;
     const secondarySize = axis === "y" ? width : height;
     const counts = new Uint32Array(primarySize);
@@ -349,9 +391,8 @@
   }
 
   function rectForBand(canvas, axis, band) {
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     const { width, height } = canvas;
-    const data = ctx.getImageData(0, 0, width, height).data;
+    const data = pixelsFor(canvas);
     const primaryStart = Math.max(0, band.start);
     const primaryEnd = Math.min(axis === "y" ? height - 1 : width - 1, band.end);
     const secondarySize = axis === "y" ? width : height;
@@ -430,5 +471,5 @@
     return "Model";
   }
 
-  window.LabelExtractorPDF = { process };
+  window.LabelExtractorPDF = { process, renderPage };
 })();

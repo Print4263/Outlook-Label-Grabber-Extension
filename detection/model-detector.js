@@ -7,9 +7,31 @@
   const CANDIDATE_CONFIDENCE = 0.01;
   const MODEL_BOX_PADDING = 0.12;
   let sessionPromise = null;
+  let ortLoadPromise = null;
+
+  // The ONNX runtime (~360 KB) is only needed when the heuristic cascade falls
+  // through to model detection. Load it on first use instead of at panel open so
+  // it doesn't sit in the startup critical path. Mirrors how heic2any is loaded.
+  function ensureOrt() {
+    if (window.ort) return Promise.resolve(window.ort);
+    if (ortLoadPromise) return ortLoadPromise;
+    ortLoadPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = chrome.runtime.getURL("lib/ort.min.js");
+      script.onload = () => resolve(window.ort);
+      script.onerror = () => {
+        ortLoadPromise = null;
+        reject(new Error("Model runtime could not load."));
+      };
+      document.head.append(script);
+    });
+    return ortLoadPromise;
+  }
 
   async function detectPages(pages) {
-    if (!window.ort || !pages || !pages.length) return null;
+    if (!pages || !pages.length) return null;
+    const ort = await ensureOrt().catch(() => null);
+    if (!ort) return null;
 
     let best = null;
     for (const page of pages) {
@@ -159,8 +181,10 @@
   }
 
   async function warmUp() {
-    if (!window.ort) return;
-    try { await getSession(); } catch (_) {}
+    try {
+      await ensureOrt();
+      await getSession();
+    } catch (_) {}
   }
 
   window.LabelExtractorModelDetector = {

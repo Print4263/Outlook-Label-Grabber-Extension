@@ -1193,6 +1193,11 @@ async function extractSelectedFile() {
     }
     if (runId !== state.extractionRunId) return;
 
+    // Rotate any sideways/landscape result upright so it displays and prints as a
+    // portrait 4x6 without the operator needing to hit Rotate first.
+    candidates = await Promise.all(candidates.map(orientLabelToPortrait));
+    if (runId !== state.extractionRunId) return;
+
     setLoadingProgress(100);
     state.lastExtractionSummary = {
       fileName: normalizedFile.name,
@@ -1962,18 +1967,24 @@ function makeExpandButton(index, label) {
   button.textContent = "Expand";
   button.className = "label-action label-action-expand";
   button.dataset.action = "expand";
-  const isManual = /manual/i.test(label.variantName || "");
-  button.disabled = isManual;
-  button.title = isManual
-    ? "Not available for manually adjusted labels"
-    : "Last resort: show the full source page only if Crop cannot reach the label.";
+  button.disabled = !state.file;
+  button.title = state.file
+    ? "Show the full source page so you can crop to the label yourself."
+    : "No source file loaded.";
   button.addEventListener("click", () => expandToSourcePage(index));
   return button;
 }
 
 async function expandToSourcePage(index) {
   const label = state.results[index];
-  if (!label || !state.file || state.extractionInProgress) return;
+  if (!label || !state.file) {
+    setStatus("Expand unavailable — load a label file first.");
+    return;
+  }
+  if (state.extractionInProgress) {
+    setStatus("Still extracting — wait for it to finish, then try Expand.");
+    return;
+  }
 
   setStatus("Loading full source page — please wait...");
   els.extractButton.disabled = true;
@@ -1993,15 +2004,17 @@ async function expandToSourcePage(index) {
     if (!sourceCanvas) {
       const normalizedFile = await normalizeFileForExtraction(state.file);
       if (normalizedFile.type === "application/pdf" || normalizedFile.name.toLowerCase().endsWith(".pdf")) {
-        const processed = await window.LabelExtractorPDF.process({
+        // Render the page directly — no detection — so Expand works regardless of
+        // what the detection cascade cached or returned.
+        const page = await window.LabelExtractorPDF.renderPage({
           buffer: await normalizedFile.arrayBuffer(),
           type: "application/pdf",
           name: normalizedFile.name
-        });
-        const pages = processed?.pages || [];
-        state.cachedPages = pages;
-        state.cachedPagesKey = fileCacheKey(normalizedFile);
-        const page = pages.find((p) => p.pageIndex === targetPageIndex) || pages[0];
+        }, targetPageIndex);
+        if (page?.canvas) {
+          state.cachedPages = [page];
+          state.cachedPagesKey = fileCacheKey(normalizedFile);
+        }
         sourceCanvas = page?.canvas || null;
         sourcePageText = page?.text || "";
       } else {
@@ -2017,6 +2030,11 @@ async function expandToSourcePage(index) {
     }
 
     if (!sourceCanvas) {
+      console.warn("[Label Extractor] Expand: no source canvas", {
+        cachedPages: state.cachedPages?.length || 0,
+        keyMatch: state.cachedPagesKey === currentCacheKey,
+        targetPageIndex
+      });
       setStatus("Could not load source page. Try using Crop instead.");
       return;
     }
@@ -2048,6 +2066,7 @@ async function expandToSourcePage(index) {
       ? "Full page loaded - crop box snapped to the likely label. Adjust if needed, then click Apply crop."
       : "Full page loaded - drag the crop box to the label then click Apply crop.");
   } catch (error) {
+    console.error("[Label Extractor] Expand failed", error);
     setStatus(`Expand failed: ${error.message}`);
   } finally {
     els.extractButton.disabled = !state.file;
@@ -2530,7 +2549,10 @@ function snapCropBoxToCurrentImage() {
   ctx.drawImage(els.cropImage, 0, 0, canvas.width, canvas.height);
   const rect = window.LabelExtractorDetector?.suggestLabelRect?.(canvas, label.pageText || "");
   const snapped = snapCropRectToSource(rect, canvas);
-  if (!snapped) return;
+  if (!snapped) {
+    setStatus("Couldn't auto-detect the label — drag the crop box to the label, then click Apply crop.");
+    return;
+  }
 
   state.cropRect = snapped;
   renderCropBox();
@@ -2604,6 +2626,44 @@ async function autoOrientLabel(label) {
   const img = await loadImage(labelToDataUrl(label));
   if (img.naturalWidth <= img.naturalHeight) return [label, false];
   return [await rotateLabel(label), true];
+}
+
+// 4x6 shipping labels are portrait; the print path forces portrait dimensions, so
+// a landscape result (common when a label image was placed sideways/rotated in the
+// source PDF) would print squished. Rotate any landscape candidate upright while
+// preserving its variant name and metadata. No-op for portrait/square labels.
+async function orientLabelToPortrait(label) {
+  if (!label?.base64) return label;
+  let img;
+  try {
+    img = await loadImage(labelToDataUrl(label));
+  } catch (_) {
+    return label;
+  }
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+  if (!w || !h || w <= h) return label;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = h;
+  canvas.height = w;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate(Math.PI / 2);
+  ctx.drawImage(img, -img.width / 2, -img.height / 2);
+
+  const dataUrl = canvas.toDataURL("image/png");
+  return {
+    ...label,
+    base64: dataUrl.split(",")[1],
+    outputMimeType: "image/png",
+    width: canvas.width,
+    height: canvas.height,
+    autoOriented: true
+  };
 }
 
 async function applyManualCrop() {
