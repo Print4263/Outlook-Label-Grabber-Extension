@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Domain Expansion: Print Label (Local)",
-  "version": "0.2.0",
-  "description": "Extracts and prints shipping labels using fully local detection — no backend required.",
+  "version": "0.3.0",
+  "description": "Extracts and prints 4x6 shipping labels from Outlook using fully local detection — handles rotated labels, auto-orients results, and scales to low-resolution register screens. No backend required.",
   "permissions": [
     "storage",
     "downloads",

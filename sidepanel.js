@@ -1,3 +1,15 @@
+// Apply the saved per-device display scale synchronously, before the panel
+// paints, so low-resolution register screens don't flash at 100% then resize.
+const UI_SCALE_KEY = "labelUiScale";
+const UI_SCALE_MIN = 50;
+const UI_SCALE_MAX = 110;
+try {
+  const cached = Number(localStorage.getItem(UI_SCALE_KEY));
+  if (Number.isFinite(cached) && cached > 0) {
+    document.documentElement.style.zoom = String(Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, cached)) / 100);
+  }
+} catch (_) {}
+
 const state = {
   file: null,
   results: [],
@@ -117,7 +129,13 @@ const els = {
   inactivityWarning: document.getElementById("inactivityWarning"),
   inactivityText: document.getElementById("inactivityText"),
   inactivityProgress: document.getElementById("inactivityProgress"),
-  inactivityCancel: document.getElementById("inactivityCancel")
+  inactivityCancel: document.getElementById("inactivityCancel"),
+  uiScaleRange: document.getElementById("uiScaleRange"),
+  uiScaleValue: document.getElementById("uiScaleValue"),
+  uiScaleSummary: document.getElementById("uiScaleSummary"),
+  uiScaleDown: document.getElementById("uiScaleDown"),
+  uiScaleUp: document.getElementById("uiScaleUp"),
+  uiScaleReset: document.getElementById("uiScaleReset")
 };
 
 init();
@@ -137,6 +155,7 @@ async function init() {
   state.printMode = "label";
   state.downloadsClearedAt = Number(saved.labelDownloadsClearedAt || 0);
   state.uiMode = "staff";
+  initUiScale();
   syncPrintControls();
   applyUiMode();
 
@@ -170,6 +189,13 @@ function bindEvents() {
     clearInactivityWarning();
     resetInactivityTimer();
   });
+
+  els.uiScaleRange?.addEventListener("input", () => applyUiScale(els.uiScaleRange.value, false));
+  els.uiScaleRange?.addEventListener("change", () => applyUiScale(els.uiScaleRange.value, true));
+  els.uiScaleDown?.addEventListener("click", () => stepUiScale(-5));
+  els.uiScaleUp?.addEventListener("click", () => stepUiScale(5));
+  els.uiScaleReset?.addEventListener("click", () => applyUiScale(autoFitScale(), true));
+
   bindCropBoxEvents();
 
   ["dragenter", "dragover"].forEach((eventName) => {
@@ -193,6 +219,43 @@ function bindEvents() {
     const pending = changes[PENDING_CONTEXT_LABEL_KEY]?.newValue;
     if (pending) processPendingContextLabel(pending);
   });
+}
+
+// Display scale (zoom) lets a single low-resolution register screen shrink the
+// whole panel so nothing is clipped. Stored in localStorage because it's a
+// per-device screen preference, not synced workflow state.
+function initUiScale() {
+  let stored = NaN;
+  try {
+    stored = Number(localStorage.getItem(UI_SCALE_KEY));
+  } catch (_) {}
+  const initial = Number.isFinite(stored) && stored > 0 ? stored : autoFitScale();
+  applyUiScale(initial, false);
+}
+
+// Largest 5% step that keeps the 720px-min content inside the current window.
+function autoFitScale() {
+  const width = window.innerWidth || 720;
+  const pct = Math.floor((width / 720) * 20) * 5;
+  return clamp(pct, UI_SCALE_MIN, 100);
+}
+
+function applyUiScale(percent, persist = false) {
+  const pct = clamp(Math.round(Number(percent) || 100), UI_SCALE_MIN, UI_SCALE_MAX);
+  document.documentElement.style.zoom = String(pct / 100);
+  if (els.uiScaleRange) els.uiScaleRange.value = String(pct);
+  if (els.uiScaleValue) els.uiScaleValue.textContent = `${pct}%`;
+  if (els.uiScaleSummary) els.uiScaleSummary.textContent = `${pct}%`;
+  if (persist) {
+    try {
+      localStorage.setItem(UI_SCALE_KEY, String(pct));
+    } catch (_) {}
+  }
+  return pct;
+}
+
+function stepUiScale(delta) {
+  applyUiScale((Number(els.uiScaleRange?.value) || 100) + delta, true);
 }
 
 function toggleUiMode() {

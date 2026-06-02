@@ -161,7 +161,53 @@ button:disabled {
   justify-content: flex-end;
 }
 
-.print-settings-disclosure > summary {
+.display-settings-disclosure {
+  grid-column: 1 / -1;
+}
+
+.display-settings-summary-value {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.display-settings {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.display-settings input[type="range"] {
+  flex: 1 1 90px;
+  min-width: 80px;
+  max-width: 220px;
+}
+
+.ui-scale-step {
+  padding: 4px 11px;
+  font-weight: 700;
+  font-size: 15px;
+  line-height: 1;
+  min-width: 34px;
+}
+
+#uiScaleValue {
+  font-variant-numeric: tabular-nums;
+  min-width: 44px;
+  text-align: right;
+  font-weight: 600;
+  color: #111827;
+}
+
+.print-settings-disclosure > summary,
+.display-settings-disclosure > summary {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -173,20 +219,24 @@ button:disabled {
   color: #374151;
 }
 
-.print-settings-disclosure > summary::-webkit-details-marker { display: none; }
+.print-settings-disclosure > summary::-webkit-details-marker,
+.display-settings-disclosure > summary::-webkit-details-marker { display: none; }
 
-.print-settings-disclosure > summary::before {
+.print-settings-disclosure > summary::before,
+.display-settings-disclosure > summary::before {
   content: '▶';
   font-size: 9px;
   transition: transform 0.15s;
   color: #6b7280;
 }
 
-.print-settings-disclosure[open] > summary::before {
+.print-settings-disclosure[open] > summary::before,
+.display-settings-disclosure[open] > summary::before {
   transform: rotate(90deg);
 }
 
-.print-settings-disclosure > summary:hover {
+.print-settings-disclosure > summary:hover,
+.display-settings-disclosure > summary:hover {
   color: #111827;
 }
 
@@ -1274,6 +1324,7 @@ h2 {
   .drop-zone-disclosure,
   .print-settings-disclosure,
   .mode-panel,
+  .display-settings-disclosure,
   .settings,
   .recent-downloads,
   .file-row,
@@ -1321,6 +1372,7 @@ h2 {
   .drop-zone-disclosure,
   .print-settings-disclosure,
   .mode-panel,
+  .display-settings-disclosure,
   .settings,
   .recent-downloads,
   .file-row,

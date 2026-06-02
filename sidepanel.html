@@ -135,6 +135,17 @@
       </section>
     </details>
 
+    <details class="display-settings-disclosure">
+      <summary><strong>Display size</strong><span id="uiScaleSummary" class="display-settings-summary-value">100%</span></summary>
+      <section class="display-settings">
+        <button id="uiScaleDown" type="button" class="ui-scale-step" title="Smaller">&minus;</button>
+        <input id="uiScaleRange" type="range" min="50" max="110" step="5" value="100" aria-label="Display size">
+        <button id="uiScaleUp" type="button" class="ui-scale-step" title="Larger">+</button>
+        <span id="uiScaleValue">100%</span>
+        <button id="uiScaleReset" type="button" title="Auto-fit to this window">Fit</button>
+      </section>
+    </details>
+
     <section class="mode-panel">
       <button id="modeToggle" type="button" title="Show lab tools and debug details">Lab mode</button>
     </section>
