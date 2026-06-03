@@ -60,7 +60,12 @@ async function resizeToLabelDpi(dataUrl, dpi = 203) {
   const targetW = Math.round(4 * dpi);
   const targetH = Math.round(6 * dpi);
   const image = await loadImage(dataUrl);
-  if (image.naturalWidth === targetW && image.naturalHeight === targetH) return dataUrl;
+
+  const trimmed = trimWhitespaceCanvas(image);
+  const srcW = trimmed.width;
+  const srcH = trimmed.height;
+  if (srcW === targetW && srcH === targetH) return trimmed.canvas.toDataURL("image/png");
+
   const canvas = document.createElement("canvas");
   canvas.width = targetW;
   canvas.height = targetH;
@@ -69,8 +74,61 @@ async function resizeToLabelDpi(dataUrl, dpi = 203) {
   ctx.imageSmoothingQuality = "high";
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, targetW, targetH);
-  ctx.drawImage(image, 0, 0, targetW, targetH);
+  // Source has already been whitespace-trimmed, so its aspect is the label's
+  // true content aspect — typically very close to 4:6. A full stretch back to
+  // 4:6 here is essentially a uniform scale plus <1% asymmetric correction, well
+  // below perceptual threshold for thermal labels. This avoids both margins
+  // (contain) and edge clipping (cover) when content is flush at trimmed edges.
+  ctx.drawImage(trimmed.canvas, 0, 0, targetW, targetH);
   return canvas.toDataURL("image/png");
+}
+
+// Crop surrounding white margins off a label image so the content fills the 4x6
+// print area instead of printing small with big white borders. Returns the
+// content-bounds canvas (or the original if it is already edge-to-edge / blank).
+function trimWhitespaceCanvas(image) {
+  const w = image.naturalWidth || image.width;
+  const h = image.naturalHeight || image.height;
+  const src = document.createElement("canvas");
+  src.width = w;
+  src.height = h;
+  const sctx = src.getContext("2d", { willReadFrequently: true });
+  sctx.drawImage(image, 0, 0);
+  const data = sctx.getImageData(0, 0, w, h).data;
+  const whiteThreshold = 246;
+  let top = 0, bottom = h - 1, left = 0, right = w - 1;
+  const rowHasContent = (y) => {
+    const base = y * w * 4;
+    for (let x = 0; x < w; x++) {
+      const i = base + x * 4;
+      if (data[i + 3] < 16) continue;
+      if (data[i] < whiteThreshold || data[i + 1] < whiteThreshold || data[i + 2] < whiteThreshold) return true;
+    }
+    return false;
+  };
+  const colHasContent = (x) => {
+    for (let y = 0; y < h; y++) {
+      const i = (y * w + x) * 4;
+      if (data[i + 3] < 16) continue;
+      if (data[i] < whiteThreshold || data[i + 1] < whiteThreshold || data[i + 2] < whiteThreshold) return true;
+    }
+    return false;
+  };
+  while (top < bottom && !rowHasContent(top)) top++;
+  while (bottom > top && !rowHasContent(bottom)) bottom--;
+  while (left < right && !colHasContent(left)) left++;
+  while (right > left && !colHasContent(right)) right--;
+
+  const cw = right - left + 1;
+  const ch = bottom - top + 1;
+  if (cw <= 0 || ch <= 0 || (cw === w && ch === h)) {
+    return { canvas: src, width: w, height: h };
+  }
+  const out = document.createElement("canvas");
+  out.width = cw;
+  out.height = ch;
+  out.getContext("2d").drawImage(src, left, top, cw, ch, 0, 0, cw, ch);
+  return { canvas: out, width: cw, height: ch };
 }
 
 async function prepareForPrint(dataUrl) {
@@ -299,7 +357,8 @@ function makeLabelPrintHtml(escapedDataUrl) {
       overflow: hidden; transform: scale(${scale}); transform-origin: top center;
     }
     img {
-      width: 4in; height: 6in; display: block; object-fit: fill;
+      width: 4in; height: 6in; display: block; object-fit: contain;
+      background: #fff;
       image-rendering: pixelated;
       image-rendering: -webkit-optimize-contrast;
       image-rendering: crisp-edges;
