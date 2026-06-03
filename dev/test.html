@@ -39,7 +39,7 @@
 </head>
 <body>
   <h1>Label Detection — Test Harness</h1>
-  <p class="sub">Runs the <strong>real</strong> detection pipeline (heuristics + ONNX model) over the bundled fixtures. Open this page at <code>chrome-extension://&lt;id&gt;/test.html</code> so the model can load.</p>
+  <p class="sub">Runs the <strong>real</strong> detection pipeline (heuristics + ONNX model) over the bundled fixtures. Open this page at <code>chrome-extension://&lt;id&gt;/dev/test.html</code> so the model can load.</p>
 
   <div class="toolbar">
     <button id="runFixtures" type="button">Run bundled fixtures</button>
@@ -54,14 +54,14 @@
 
   <p class="note">Tip: drop new sample labels into <code>debug-ebay-images/</code> or <code>debug-online-return-images/</code> and add their filenames to the <code>FIXTURES</code> list in <code>test.js</code>. A green pill = a confident full-label detection; amber = a crop/fallback variant; red = nothing usable.</p>
 
-  <script src="lib/pdf.min.js"></script>
-  <script src="lib/ort.min.js"></script>
-  <script src="detection/crop-engine.js"></script>
-  <script src="detection/model-detector.js"></script>
-  <script src="detection/label-detector.js"></script>
-  <script src="detection/pdf-processor.js"></script>
-  <script src="detection/png-processor.js"></script>
-  <script src="config.js"></script>
+  <script src="../lib/pdf.min.js"></script>
+  <script src="../lib/ort.min.js"></script>
+  <script src="../detection/crop-engine.js"></script>
+  <script src="../detection/model-detector.js"></script>
+  <script src="../detection/label-detector.js"></script>
+  <script src="../detection/pdf-processor.js"></script>
+  <script src="../detection/png-processor.js"></script>
+  <script src="../config.js"></script>
   <script src="test.js"></script>
 </body>
 </html>

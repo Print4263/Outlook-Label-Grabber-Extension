@@ -3,7 +3,7 @@
 
   // pdf.min.js (~320 KB) is only needed for PDF labels, so load it on first use
   // instead of at panel open. Image-only and idle sessions never pay for it.
-  // (test.html loads pdf.min.js itself, so window.pdfjsLib is already present there.)
+  // (dev/test.html loads pdf.min.js itself, so window.pdfjsLib is already present there.)
   let pdfJsLoadPromise = null;
   function ensurePdfJsScript() {
     if (window.pdfjsLib) return Promise.resolve();

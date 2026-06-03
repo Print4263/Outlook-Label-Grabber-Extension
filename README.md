@@ -46,6 +46,10 @@ If the panel looks clipped or too large on a register screen (for example a 720p
 
 The chosen size is saved on that device only and is applied before the panel paints, so each register can have its own setting without affecting other PCs.
 
+## Project structure
+
+The UI runs from `sidepanel.html`, which loads a lean core (`sidepanel.js` — state, init, event wiring, rendering, and the extraction/print orchestration) plus four focused, plain-script modules under `app/`: `app/print.js` (monochrome conversion + print HTML + the print window flow), `app/downloads.js` (the Recent-downloads list, intake, and Use/Show/Clear/preview actions), `app/crop.js` (the crop editor plus image transforms like auto-orient and rotate-to-portrait), and `app/detect.js` (turning local-detector output into ranked label candidates and fallbacks). These are classic (non-module) scripts that share global scope, so they behave exactly as the original single file. The on-device detection engine lives in `detection/` (`label-detector.js`, `pdf-processor.js`, `png-processor.js`, `crop-engine.js`, `model-detector.js`), third-party libraries in `lib/` (pdf.js, ONNX Runtime, heic2any), the ONNX model in `models/`, the service worker in `background.js`, and the Outlook/page content scripts in `outlook-reader.js` and `page-label-drag.js`. The `dev/` folder holds the detection test harness and sample fixtures and is not part of the shipped extension.
+
 ## Notes
 
 - No backend server. No API key. No internet required for detection.
