@@ -23,6 +23,7 @@ const state = {
   downloadsRefreshTimer: null,
   downloadPreviewUrl: "",
   inactivityTimer: null,
+  idleScrollTimer: null,
   inactivityCountdownTimer: null,
   inactivityCountdownSeconds: 0,
   seenDownloadIds: new Set(),
@@ -77,6 +78,9 @@ const AUTO_CLEANUP_KEEP = 3;
 const MANUAL_CLEANUP_KEEP = 1;
 const CLEAR_WARNING_DELAY_MS = 40000;
 const CLEAR_COUNTDOWN_SECONDS = 60;
+// After this much complete inactivity (no pointer/key/scroll/touch), scroll the
+// panel back to the top so the next person starts at a clean view. Tunable.
+const IDLE_SCROLL_TO_TOP_MS = 120000;
 const POPOUT_WIDTH_RATIO = 0.30;
 const POPOUT_MIN_WIDTH = 520;
 const POPOUT_MAX_WIDTH = 760;
@@ -213,6 +217,21 @@ function bindEvents() {
   });
 
   els.dropZone.addEventListener("drop", handleDrop);
+
+  // Idle-scroll-to-top: any real activity re-arms the timer (throttled so a burst
+  // of mousemove/scroll events doesn't thrash). When it fires, the panel eases
+  // back to the top. The programmatic scroll that results is a no-op once at top.
+  let lastIdleReset = 0;
+  const onActivity = () => {
+    const now = Date.now();
+    if (now - lastIdleReset < 1000) return;
+    lastIdleReset = now;
+    resetIdleScrollTimer();
+  };
+  ["pointerdown", "keydown", "wheel", "touchstart", "scroll", "mousemove"].forEach((evt) => {
+    window.addEventListener(evt, onActivity, { passive: true });
+  });
+  resetIdleScrollTimer();
 
   chrome.storage?.onChanged?.addListener((changes, areaName) => {
     if (areaName !== "local") return;
@@ -526,6 +545,24 @@ function updateInactivityWarning() {
   els.inactivityProgress.style.width = `${(s / CLEAR_COUNTDOWN_SECONDS) * 100}%`;
 }
 
+// Independent of the auto-clear timer: staff often leave the panel scrolled
+// halfway down. After a stretch of complete idle, ease it back to the top so the
+// next label starts at a clean view. Re-armed by any real user activity.
+function resetIdleScrollTimer() {
+  clearTimeout(state.idleScrollTimer);
+  state.idleScrollTimer = setTimeout(scrollPanelToTop, IDLE_SCROLL_TO_TOP_MS);
+}
+
+function scrollPanelToTop() {
+  const current = window.scrollY || document.documentElement.scrollTop || 0;
+  if (current <= 4) return; // already at top — nothing to do
+  try {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  } catch (_) {
+    window.scrollTo(0, 0);
+  }
+}
+
 function showBanner(message, type = "info", duration = 4000) {
   els.alertBanner.textContent = message;
   els.alertBanner.className = `alert-banner ${type}`;
@@ -588,6 +625,9 @@ function clearCurrentWork() {
   state.inactivityTimer = null;
   resetFileSelection();
   setStatus("Cleared. Drop the next label file.");
+  // Whether cleared by the auto-clear timer or the Clear button, reset the view
+  // to the top so the next customer's label starts at a clean panel.
+  scrollPanelToTop();
 }
 
 function resetFileSelection() {
