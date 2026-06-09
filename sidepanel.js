@@ -1387,11 +1387,15 @@ async function printPreviewDataUrl(label) {
   if (!label) return "";
   const raw = labelToDataUrl(label);
   if (label.outputMimeType === "application/pdf") return raw;
-  if (label._printPreviewUrl) return label._printPreviewUrl;
+  // Cache keyed by the image itself: crop/rotate spread the prior label (carrying
+  // _printPreviewUrl), so without comparing base64 a cropped label would keep
+  // showing the pre-crop preview.
+  if (label._printPreviewUrl && label._printPreviewKey === label.base64) return label._printPreviewUrl;
   try {
     const scaled = await resizeToLabelDpi(raw, 203);
     const prepared = await prepareForPrint(scaled);
     label._printPreviewUrl = prepared;
+    label._printPreviewKey = label.base64;
     return prepared;
   } catch (_) {
     return raw;
