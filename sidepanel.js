@@ -918,6 +918,13 @@ function renderResults(payload) {
     preview.className = "preview";
     preview.src = dataUrl;
     preview.title = `Extracted label ${index + 1}`;
+    // Show what actually prints (white-trimmed, filled, sharpened) so staff can
+    // trust the preview and skip needless Crop/Expand.
+    if (preview.tagName === "IMG") {
+      printPreviewDataUrl(label).then((url) => {
+        if (url && url !== dataUrl && preview.isConnected) preview.src = url;
+      });
+    }
 
     const warnings = document.createElement("ul");
     warnings.className = "warnings";
@@ -1335,6 +1342,11 @@ function updateSheetPreview() {
     return;
   }
   els.sheetPreviewLabel.src = labelToDataUrl(label);
+  // Upgrade to the print-accurate image (white-trimmed, filled, sharpened) once
+  // ready, so the sheet preview matches the printed output.
+  printPreviewDataUrl(label).then((url) => {
+    if (url && state.results[state.selectedLabelIndex] === label) els.sheetPreviewLabel.src = url;
+  });
   const sheet = els.sheetPreviewLabel.parentElement;
   const labelMode = state.printMode === "label";
   sheet.classList.toggle("label-sheet", labelMode);
@@ -1353,6 +1365,27 @@ function updateSheetPreview() {
 
 function labelToDataUrl(label) {
   return `data:${label.outputMimeType || "image/png"};base64,${label.base64}`;
+}
+
+// The on-screen preview must match what actually prints, so staff trust it and
+// don't needlessly Crop/Expand. Runs the label through the exact print pipeline
+// (white-trim + fill to 4x6 via resizeToLabelDpi, then prepareForPrint sharpen),
+// the same steps printLabelAtIndex uses. Cached on the label object so each one
+// is processed once; rotate/crop/expand create new label objects, so the cache
+// naturally invalidates.
+async function printPreviewDataUrl(label) {
+  if (!label) return "";
+  const raw = labelToDataUrl(label);
+  if (label.outputMimeType === "application/pdf") return raw;
+  if (label._printPreviewUrl) return label._printPreviewUrl;
+  try {
+    const scaled = await resizeToLabelDpi(raw, 203);
+    const prepared = await prepareForPrint(scaled);
+    label._printPreviewUrl = prepared;
+    return prepared;
+  } catch (_) {
+    return raw;
+  }
 }
 
 async function rotateLabel(label) {
