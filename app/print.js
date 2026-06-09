@@ -4,10 +4,10 @@
 // loadImage, escapeHtml, clamp, and state, which remain defined in sidepanel.js.
 
 // Quiet-zone border left around the trimmed label content when filling the 4x6
-// sheet, in inches, equal on all sides. Just above the printer's ~0.16in
-// non-printable edge so the label is as large as possible without clipping.
-// Tunable: lower = bigger label (risk edge clip), higher = more breathing room.
-const LABEL_PRINT_MARGIN_INCH = 0.2;
+// sheet, in inches, equal on all sides. Tunable: lower = bigger label (and closer
+// to the printer's non-printable edge, so watch for edge clipping), higher = more
+// breathing room.
+const LABEL_PRINT_MARGIN_INCH = 0.1;
 
 function applyUnsharpMask(lums, width, height, radius, amount) {
   const kernelSize = radius * 2 + 1;
