@@ -568,6 +568,10 @@
       if (!borderRect) continue;
       // Known online-return forms get their own precise trimming; leave them be.
       const rect = knownOnlineReturnForm ? borderRect : expandRectToClippedBarcodes(borderRect, page.canvas);
+      if (!knownOnlineReturnForm) {
+        const fullPage = await fullPageLabelIfShaped(page, pages, rect);
+        if (fullPage) { detections.push(fullPage); continue; }
+      }
       const areaRatio = (rect.width * rect.height) / Math.max(1, page.canvas.width * page.canvas.height);
       if (areaRatio < 0.08) continue;
       let label = await cropPageCanvas(page, rect, knownOnlineReturnForm ? {
@@ -633,6 +637,9 @@
       const borderRect = detectSolidLabelBorder(page.canvas);
       if (!borderRect) continue;
       const rect = expandRectToClippedBarcodes(borderRect, page.canvas);
+
+      const fullPage = await fullPageLabelIfShaped(page, pages, rect);
+      if (fullPage) { detections.push(fullPage); continue; }
 
       const areaRatio = rect.width * rect.height / Math.max(1, page.canvas.width * page.canvas.height);
       const score = areaRatio + labelTextScore(page.text) + (page.pageIndex || 0) * 0.01;
@@ -1445,6 +1452,39 @@
     right = Math.min(canvas.width, right);
     bottom = Math.min(canvas.height, bottom);
     return { x: left, y: top, width: right - left, height: bottom - top };
+  }
+
+  // A page whose own aspect is ~4:6 (or ~6:4) IS a single label. On these,
+  // a border detector that locks onto an internal dashed/solid line and crops
+  // to a sub-region is wrong (the "zoomed in too deep" symptom) — the whole
+  // auto-trimmed page is the label.
+  const LABEL_PAGE_ASPECT_TOL = 0.03;
+  const FULL_PAGE_LABEL_AREA_RATIO = 0.85;
+  function isLabelShapedPage(canvas) {
+    if (!canvas) return false;
+    const aspect = canvas.width / Math.max(1, canvas.height);
+    const portrait = 4 / 6;
+    return Math.abs(aspect - portrait) <= LABEL_PAGE_ASPECT_TOL
+      || Math.abs(aspect - 1 / portrait) <= LABEL_PAGE_ASPECT_TOL;
+  }
+
+  // When a border crop is suspiciously small on a label-shaped page, returns a
+  // full-page auto-cropped detection to use instead; otherwise null.
+  async function fullPageLabelIfShaped(page, pages, rect) {
+    const areaRatio = (rect.width * rect.height) / Math.max(1, page.canvas.width * page.canvas.height);
+    if (!isLabelShapedPage(page.canvas) || areaRatio >= FULL_PAGE_LABEL_AREA_RATIO) return null;
+    return {
+      confidence: 0.9,
+      reason: "label-shaped-page",
+      pageIndex: page.pageIndex,
+      pageCount: getPageCount(pages),
+      pages,
+      label: await autoCropPageCanvas(page),
+      cropRect: null,
+      sourceWidth: page.canvas.width,
+      sourceHeight: page.canvas.height,
+      qualityScore: 3.5
+    };
   }
 
   function suggestLabelRect(canvas, pageText = "") {
