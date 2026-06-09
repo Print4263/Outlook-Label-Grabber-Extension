@@ -7,7 +7,7 @@
 // sheet, in inches, equal on all sides. Tunable: lower = bigger label (and closer
 // to the printer's non-printable edge, so watch for edge clipping), higher = more
 // breathing room.
-const LABEL_PRINT_MARGIN_INCH = 0.09;
+const LABEL_PRINT_MARGIN_INCH = 0.075;
 
 function applyUnsharpMask(lums, width, height, radius, amount) {
   const kernelSize = radius * 2 + 1;
