@@ -564,8 +564,10 @@
     for (const page of pages) {
       if (onlineReturnCenterDocument && isOnlineReturnAuthorizationSlip(page?.text)) continue;
       const knownOnlineReturnForm = onlineReturnCenterDocument && isOnlineReturnMailingLabelPage(page?.text);
-      const rect = trimKnownDashedBorderForm(detectDashedBorder(page.canvas), page, knownOnlineReturnForm);
-      if (!rect) continue;
+      const borderRect = trimKnownDashedBorderForm(detectDashedBorder(page.canvas), page, knownOnlineReturnForm);
+      if (!borderRect) continue;
+      // Known online-return forms get their own precise trimming; leave them be.
+      const rect = knownOnlineReturnForm ? borderRect : expandRectToClippedBarcodes(borderRect, page.canvas);
       const areaRatio = (rect.width * rect.height) / Math.max(1, page.canvas.width * page.canvas.height);
       if (areaRatio < 0.08) continue;
       let label = await cropPageCanvas(page, rect, knownOnlineReturnForm ? {
@@ -628,8 +630,9 @@
     const detections = [];
 
     for (const page of pages) {
-      const rect = detectSolidLabelBorder(page.canvas);
-      if (!rect) continue;
+      const borderRect = detectSolidLabelBorder(page.canvas);
+      if (!borderRect) continue;
+      const rect = expandRectToClippedBarcodes(borderRect, page.canvas);
 
       const areaRatio = rect.width * rect.height / Math.max(1, page.canvas.width * page.canvas.height);
       const score = areaRatio + labelTextScore(page.text) + (page.pageIndex || 0) * 0.01;
@@ -1390,6 +1393,58 @@
   function findBarcodeBoundingBox(canvas) {
     const regions = findBarcodeRegions(canvas);
     return regions.length ? unionRects(regions) : null;
+  }
+
+  // Fine barcode grid (matches suggestLabelRect's resolution), memoized per canvas.
+  const fineBarcodeRegionCache = new WeakMap();
+  function findFineBarcodeRegions(canvas) {
+    let regions = fineBarcodeRegionCache.get(canvas);
+    if (regions) return regions;
+    regions = findBarcodeRegionsInGrid(canvas, 8, 12, 22);
+    fineBarcodeRegionCache.set(canvas, regions);
+    return regions;
+  }
+
+  // A border detector locks onto the printed label frame, but on many USPS labels
+  // the data matrix / a barcode sits right at or just outside that frame and gets
+  // clipped. Grow the detected crop outward to include any barcode cell that the
+  // crop is clipping — but only cells within `margin` of the crop, so a separate
+  // barcode elsewhere on the page (e.g. a packing slip) is not swallowed.
+  function expandRectToClippedBarcodes(rect, canvas) {
+    if (!rect || !canvas) return rect;
+    const regions = findFineBarcodeRegions(canvas);
+    if (!regions.length) return rect;
+
+    const margin = Math.round(Math.min(canvas.width, canvas.height) * 0.06);
+    let left = rect.x;
+    let top = rect.y;
+    let right = rect.x + rect.width;
+    let bottom = rect.y + rect.height;
+    const bandLeft = left - margin;
+    const bandTop = top - margin;
+    const bandRight = right + margin;
+    const bandBottom = bottom + margin;
+    let grew = false;
+
+    for (const region of regions) {
+      const rl = region.x;
+      const rt = region.y;
+      const rr = region.x + region.width;
+      const rb = region.y + region.height;
+      // Skip barcode cells that aren't near this crop — not part of this label.
+      if (rr < bandLeft || rl > bandRight || rb < bandTop || rt > bandBottom) continue;
+      if (rl < left) { left = rl; grew = true; }
+      if (rt < top) { top = rt; grew = true; }
+      if (rr > right) { right = rr; grew = true; }
+      if (rb > bottom) { bottom = rb; grew = true; }
+    }
+
+    if (!grew) return rect;
+    left = Math.max(0, left);
+    top = Math.max(0, top);
+    right = Math.min(canvas.width, right);
+    bottom = Math.min(canvas.height, bottom);
+    return { x: left, y: top, width: right - left, height: bottom - top };
   }
 
   function suggestLabelRect(canvas, pageText = "") {
