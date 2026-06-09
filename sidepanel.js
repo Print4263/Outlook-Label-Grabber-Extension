@@ -120,6 +120,7 @@ const els = {
   copyFailureLog: document.getElementById("copyFailureLog"),
   debugReportStatus: document.getElementById("debugReportStatus"),
   printSettings: document.getElementById("printSettings"),
+  manualCropTip: document.getElementById("manualCropTip"),
   sheetPreviewLabel: document.getElementById("sheetPreviewLabel"),
   cropEditor: document.getElementById("cropEditor"),
   closeCropEditor: document.getElementById("closeCropEditor"),
@@ -894,10 +895,19 @@ function renderResults(payload) {
     empty.textContent = payload.warnings?.join(" ") || "No label candidate was returned.";
     els.results.append(empty);
     els.printSettings.classList.add("inactive");
+    // Nothing detected — surface the manual crop/expand guidance.
+    if (els.manualCropTip) els.manualCropTip.hidden = false;
     return;
   }
 
   els.printSettings.classList.remove("inactive");
+
+  // Only nudge staff to Crop/Expand when the top result actually needs it. On a
+  // clean, print-ready label the tip is hidden so they trust the preview as-is.
+  if (els.manualCropTip) {
+    const topForTip = payload.labels[state.selectedLabelIndex] || payload.labels[0];
+    els.manualCropTip.hidden = Boolean(getLabelActionHints(topForTip).printReady);
+  }
 
   const multiLabelCount = getTwinLabelCount(payload.labels);
   if (multiLabelCount > 1) {
