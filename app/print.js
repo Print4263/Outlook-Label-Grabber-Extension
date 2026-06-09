@@ -3,6 +3,11 @@
 // are called from sidepanel.js (printLabelAtIndex) exactly as before. They rely on
 // loadImage, escapeHtml, clamp, and state, which remain defined in sidepanel.js.
 
+// Quiet-zone border left around the trimmed label content when filling the 4x6
+// sheet, as a fraction of each dimension. Keeps content off the physical edge.
+// Tunable: raise for more breathing room, lower to make the label bigger.
+const LABEL_PRINT_MARGIN_RATIO = 0.06;
+
 function applyUnsharpMask(lums, width, height, radius, amount) {
   const kernelSize = radius * 2 + 1;
   const invK = 1 / kernelSize;
@@ -62,9 +67,6 @@ async function resizeToLabelDpi(dataUrl, dpi = 203) {
   const image = await loadImage(dataUrl);
 
   const trimmed = trimWhitespaceCanvas(image);
-  const srcW = trimmed.width;
-  const srcH = trimmed.height;
-  if (srcW === targetW && srcH === targetH) return trimmed.canvas.toDataURL("image/png");
 
   const canvas = document.createElement("canvas");
   canvas.width = targetW;
@@ -74,12 +76,15 @@ async function resizeToLabelDpi(dataUrl, dpi = 203) {
   ctx.imageSmoothingQuality = "high";
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, targetW, targetH);
-  // Source has already been whitespace-trimmed, so its aspect is the label's
-  // true content aspect — typically very close to 4:6. A full stretch back to
-  // 4:6 here is essentially a uniform scale plus <1% asymmetric correction, well
-  // below perceptual threshold for thermal labels. This avoids both margins
-  // (contain) and edge clipping (cover) when content is flush at trimmed edges.
-  ctx.drawImage(trimmed.canvas, 0, 0, targetW, targetH);
+  // Source has already been whitespace-trimmed to the label's true content. Place
+  // it inside a quiet-zone margin instead of flush to the edges, so content isn't
+  // jammed against the physical cut edge (thermal printers can clip the very edge,
+  // and barcodes need a quiet zone). The remaining area stays the label's ~4:6
+  // aspect, so this is a near-uniform scale into the inset box.
+  const marginRatio = LABEL_PRINT_MARGIN_RATIO;
+  const mx = Math.round(targetW * marginRatio);
+  const my = Math.round(targetH * marginRatio);
+  ctx.drawImage(trimmed.canvas, 0, 0, trimmed.width, trimmed.height, mx, my, targetW - mx * 2, targetH - my * 2);
   return canvas.toDataURL("image/png");
 }
 
