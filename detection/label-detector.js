@@ -1,6 +1,17 @@
 (function () {
   "use strict";
 
+  // Optional, no-op-by-default trace sink for the dev training studio. Production
+  // never sets it, so trace() is a single null check and costs nothing. It never
+  // throws — a broken sink must not break detection.
+  let traceSink = null;
+  function setTraceSink(fn) { traceSink = typeof fn === "function" ? fn : null; }
+  function clearTrace() { traceSink = null; }
+  function trace(stage, payload) {
+    if (!traceSink) return;
+    try { traceSink({ stage, ...(payload || {}) }); } catch (_) {}
+  }
+
   const CONFIDENCE_THRESHOLD = 0.72;
   const KEYWORDS = [
     "USPS TRACKING",
@@ -63,48 +74,71 @@
     const candidates = [];
     const onlineReturnCenterDocument = isOnlineReturnCenterDocument(pages);
 
+    // Records how many candidates the last stage added, for the studio log.
+    let mark = 0;
+    const stage = (detector, extra) => {
+      trace("stage", { detector, produced: candidates.length - mark, total: candidates.length, ...(extra || {}) });
+      mark = candidates.length;
+    };
+    trace("run-start", { path: "pdf", pages: pages.length, onlineReturnCenterDocument });
+
     const embeddedUspsHit = onlineReturnCenterDocument ? null : await embeddedUspsLabelDetection(pages);
     if (embeddedUspsHit) candidates.push(embeddedUspsHit);
+    stage("embedded-usps", { skipped: onlineReturnCenterDocument });
 
     const embeddedImageHits = await embeddedImageLabelDetections(pages);
     candidates.push(...embeddedImageHits);
+    stage("embedded-image");
 
     candidates.push(...await dashedBorderLabelDetections(pages));
+    stage("dashed-border");
     candidates.push(...await solidBorderLabelDetections(pages));
+    stage("solid-border");
 
     const foldHereHit = await foldHereLabelDetection(pages);
     if (foldHereHit && isUpsLabelText(findPage(pages, foldHereHit.pageIndex)?.text)) {
+      trace("early-exit", { detector: "fold-here", reason: foldHereHit.reason, confidence: Number(foldHereHit.confidence || 0), note: "UPS fold-here sheet forced as sole result" });
       return [foldHereHit];
     }
     if (foldHereHit) candidates.push(foldHereHit);
+    stage("fold-here");
 
     const labelSizedHit = await labelSizedPageDetection(pages);
     if (labelSizedHit) candidates.push(labelSizedHit);
+    stage("label-sized");
 
     const strongEarly = rankedDetections(candidates, pages)[0];
     if (Number(strongEarly?.confidence || 0) >= 0.95
       && !shouldPreferCarrierText(strongEarly, pages)
       && cropContainsBarcodeOrUnknown(strongEarly, pages)) {
+      trace("early-exit", { detector: strongEarly.reason, reason: strongEarly.reason, confidence: Number(strongEarly.confidence || 0), score: detectionRankScore(strongEarly), note: "deterministic hit >=0.95 short-circuited the ONNX model" });
       return [strongEarly];
     }
 
     const modelHit = await trainedModelDetection(pages);
     if (modelHit) candidates.push(modelHit);
+    stage("trained-model", { available: Boolean(window.LabelExtractorModelDetector) });
 
     const fashionNovaHit = await fashionNovaLowerBarcodeDetection(pages);
     if (fashionNovaHit) candidates.push(fashionNovaHit);
+    stage("fashion-nova");
 
     const lowerLabelHit = await lowerContentLabelDetection(pages);
     if (lowerLabelHit) candidates.push(lowerLabelHit);
+    stage("lower-content");
 
     const keywordHit = await keywordDetection(pages);
     if (keywordHit) candidates.push(keywordHit);
+    stage("keywords");
 
     const barcodeHit = await barcodeDetection(pages);
     if (barcodeHit) candidates.push(barcodeHit);
+    stage("barcode");
 
     candidates.push(...await textLabelPageFallbacks(pages));
+    stage("text-label-fallback");
     candidates.push(...await embeddedLabelPageFallbacks(pages));
+    stage("embedded-label-fallback");
 
     if (!candidates.length && pages.length === 1) {
       candidates.push({
@@ -115,9 +149,28 @@
         pages,
         label: await autoCropPageCanvas(pages[0])
       });
+      stage("single-page-pdf");
     }
 
-    return rankedDetections(candidates, pages);
+    const ranked = rankedDetections(candidates, pages);
+    traceRanked(ranked);
+    return ranked;
+  }
+
+  // Emits the final ranked order with each candidate's score so the studio can
+  // show why the winner won and each loser lost.
+  function traceRanked(ranked) {
+    if (!traceSink) return;
+    trace("ranked", {
+      order: ranked.map((c) => ({
+        reason: c.reason || "",
+        variantName: c.variantName || "",
+        carrier: c.carrier || "",
+        confidence: Number(c.confidence || 0),
+        score: detectionRankScore(c),
+        breakdown: scoreBreakdown(c)
+      }))
+    });
   }
 
   function rankedDetections(candidates, pages) {
@@ -143,7 +196,10 @@
       ...await dashedBorderLabelDetections(pages),
       ...await solidBorderLabelDetections(pages)
     ].sort(compareDetections);
-    if (borderHits[0]) return borderHits[0];
+    if (borderHits[0]) {
+      trace("early-exit", { detector: borderHits[0].reason, reason: borderHits[0].reason, confidence: Number(borderHits[0].confidence || 0), note: "border hit returned before model (png single-result path)" });
+      return borderHits[0];
+    }
 
     const modelHit = await trainedModelDetection(pages);
     if (modelHit) return modelHit;
@@ -171,32 +227,48 @@
     if (!pages.length) return [];
 
     const candidates = [];
+    let mark = 0;
+    const stage = (detector, extra) => {
+      trace("stage", { detector, produced: candidates.length - mark, total: candidates.length, ...(extra || {}) });
+      mark = candidates.length;
+    };
+    trace("run-start", { path: "png", pages: pages.length });
 
     candidates.push(...await dashedBorderLabelDetections(pages));
+    stage("dashed-border");
     candidates.push(...await solidBorderLabelDetections(pages));
+    stage("solid-border");
 
     const modelHit = await trainedModelDetection(pages);
     if (modelHit) candidates.push(modelHit);
+    stage("trained-model", { available: Boolean(window.LabelExtractorModelDetector) });
 
     const keywordHit = await keywordDetection(pages);
     if (keywordHit) candidates.push(keywordHit);
+    stage("keywords");
 
     const barcodeHit = await barcodeDetection(pages);
     if (barcodeHit) candidates.push(barcodeHit);
+    stage("barcode");
 
     candidates.push(...await imageLabelFallbacks(pages));
+    stage("image-label-fallback");
 
     if (!candidates.length) {
       const fallback = await detectPngPages(pages);
       if (fallback?.label) candidates.push(fallback);
+      stage("png-single-fallback");
     }
 
     if (!candidates.length) {
       const manualFallback = await manualImageFallback(pages);
       if (manualFallback?.label) candidates.push(manualFallback);
+      stage("manual-image-fallback");
     }
 
-    return dedupeDetections(candidates).sort(compareDetections);
+    const ranked = dedupeDetections(candidates).sort(compareDetections);
+    traceRanked(ranked);
+    return ranked;
   }
 
   async function manualImageFallback(pages) {
@@ -630,6 +702,25 @@
       + labelTextScore(page?.text)
       + carrierTextPreferenceScore(candidate, page)
       + barcodeContainmentPenalty(candidate, page);
+  }
+
+  // Same components as detectionRankScore, itemized for the dev studio log so the
+  // ranking is explainable per candidate. total must equal detectionRankScore().
+  function scoreBreakdown(candidate) {
+    const page = findPage(candidate?.pages || [], candidate?.pageIndex);
+    const qualityScore = Number(candidate?.qualityScore || 0);
+    const confidence = Number(candidate?.confidence || 0);
+    const textScore = labelTextScore(page?.text);
+    const carrierPref = carrierTextPreferenceScore(candidate, page);
+    const barcodePenalty = barcodeContainmentPenalty(candidate, page);
+    return {
+      qualityScore,
+      confidence,
+      labelTextScore: textScore,
+      carrierPref,
+      barcodePenalty,
+      total: qualityScore + confidence + textScore + carrierPref + barcodePenalty
+    };
   }
 
   // A real shipping-label crop must contain a barcode. When a crop with explicit
@@ -1451,6 +1542,12 @@
     detectAllPngCandidates,
     detectDashedBorder,
     suggestLabelRect,
-    findBarcodeRegions
+    findBarcodeRegions,
+    // Dev training studio hooks (no-op in production — traceSink stays null):
+    setTraceSink,
+    clearTrace,
+    guessCarrier,
+    detectionRankScore,
+    scoreBreakdown
   };
 })();

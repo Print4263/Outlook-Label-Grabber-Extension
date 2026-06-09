@@ -3,39 +3,45 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Label Detection — Test Harness</title>
+  <title>Label Detection — Training Studio</title>
   <style>
     :root { font-family: "Segoe UI", Arial, sans-serif; color: #111827; }
     body { margin: 0; padding: 20px; background: #f3f5f8; }
     h1 { font-size: 20px; margin: 0 0 4px; }
     .sub { color: #4b5563; margin: 0 0 16px; font-size: 13px; }
-    .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
-    .toolbar select { font: inherit; border: 1px solid #c8d0dc; border-radius: 8px; background: #fff; padding: 7px 10px; }
+    .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+    .toolbar select, .toolbar input[type=file] { font: inherit; border: 1px solid #c8d0dc; border-radius: 8px; background: #fff; padding: 7px 10px; }
     button { font: inherit; border: 1px solid #c8d0dc; border-radius: 8px; background: #fff; padding: 8px 14px; cursor: pointer; }
     button:hover { border-color: #9aa8ba; }
+    button:disabled { opacity: 0.5; cursor: default; }
     #runFixtures { background: linear-gradient(180deg, #2563eb, #1d4ed8); color: #fff; border-color: #1d4ed8; }
     #runCorpusGroup { background: linear-gradient(180deg, #0f766e, #115e59); color: #fff; border-color: #115e59; }
-    .summary { margin: 0 0 16px; font-size: 13px; color: #374151; }
+    #toolbarExtra { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .toolbar-sep { width: 1px; align-self: stretch; background: #d7dde6; margin: 2px 2px; }
+    label.field { font-size: 13px; color: #374151; }
+    .summary { margin: 0 0 14px; font-size: 13px; color: #374151; }
+    .groupbar { display: flex; gap: 10px; align-items: center; margin: 4px 0 12px; flex-wrap: wrap; font-size: 13px; color: #374151; }
+
+    /* Cards */
     .case { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
-    .case h2 { font-size: 14px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+    .case h2 { font-size: 14px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .case h2 .path { color: #6b7280; font-weight: 400; font-size: 12px; }
     .pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
-    .pill.ok { background: #dcfce7; color: #166534; }
+    .pill.ok, .pill.pass { background: #dcfce7; color: #166534; }
     .pill.warn { background: #fef9c3; color: #854d0e; }
-    .pill.bad { background: #fee2e2; color: #991b1b; }
+    .pill.bad, .pill.fail { background: #fee2e2; color: #991b1b; }
     .pill.err { background: #f3f4f6; color: #374151; }
-    .pill.pass { background: #dcfce7; color: #166534; }
-    .pill.fail { background: #fee2e2; color: #991b1b; }
+    .pill.carrier { background: #e0e7ff; color: #3730a3; }
     .judgement { display: inline-flex; gap: 4px; margin-left: auto; }
     .judgement button { padding: 4px 8px; border-radius: 6px; font-weight: 700; }
     .judgement button.active.pass { background: #16a34a; border-color: #15803d; color: #fff; }
     .judgement button.active.fail { background: #dc2626; border-color: #b91c1c; color: #fff; }
-    .groupbar { display: flex; gap: 10px; align-items: center; margin: -8px 0 16px; flex-wrap: wrap; font-size: 13px; color: #374151; }
     .row { display: flex; gap: 16px; align-items: flex-start; }
     .source img { max-width: 180px; max-height: 220px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; }
     .source .meta { font-size: 11px; color: #6b7280; margin-top: 4px; }
     table { border-collapse: collapse; font-size: 12px; width: 100%; }
     th, td { text-align: left; padding: 5px 9px; border-bottom: 1px solid #f0f1f4; vertical-align: top; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
     th { color: #6b7280; font-weight: 600; }
     tr.chosen td { background: #eff6ff; }
     tr.chosen td:first-child { font-weight: 700; }
@@ -43,6 +49,13 @@
     tr.chosen .prefer-candidate { background: #2563eb; border-color: #1d4ed8; color: #fff; }
     .thumb { width: 70px; height: 70px; object-fit: contain; border: 1px solid #e5e7eb; border-radius: 4px; background: #fff; }
     .crop-tweak { padding: 4px 8px; border-radius: 6px; font-size: 12px; }
+    .warns { color: #92400e; font-size: 11px; }
+    .conf { font-variant-numeric: tabular-nums; }
+    code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; }
+    .note { font-size: 12px; color: #6b7280; margin-top: 20px; }
+    .muted { color: #6b7280; }
+
+    /* Inline crop editor */
     .crop-editor-inline { margin-top: 12px; border-top: 1px solid #e5e7eb; padding-top: 12px; }
     .crop-edit-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
     .crop-stage { width: min(980px, 100%); max-height: 82vh; overflow: auto; background: #111827; border: 1px solid #9ca3af; border-radius: 6px; }
@@ -59,33 +72,88 @@
     .crop-handle.sw { left: -7px; bottom: -7px; cursor: nesw-resize; }
     .crop-handle.w { left: -7px; top: calc(50% - 6px); cursor: ew-resize; }
     .manual-badge { color: #1d4ed8; font-size: 11px; font-weight: 700; }
-    .warns { color: #92400e; font-size: 11px; }
-    .conf { font-variant-numeric: tabular-nums; }
-    code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; }
-    .note { font-size: 12px; color: #6b7280; margin-top: 20px; }
+
+    /* Stats panel */
+    .stats-panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
+    .stats-head { font-size: 13px; margin-bottom: 8px; }
+    .stats-subhead { font-size: 12px; font-weight: 700; color: #374151; margin: 12px 0 4px; }
+    .stats-table th, .stats-table td { padding: 4px 10px; }
+    .stats-table tr.model-row td { background: #fdf2f8; font-weight: 600; }
+
+    /* Log panel */
+    .log-panel { margin-top: 12px; border-top: 1px solid #e5e7eb; padding-top: 8px; font-size: 12px; }
+    .log-panel > summary { cursor: pointer; color: #1d4ed8; font-weight: 600; }
+    .log-early { color: #b45309; } .log-rule { color: #6d28d9; }
+    .log-body { padding: 8px 0 0; }
+    .log-section { margin-bottom: 10px; }
+    .log-h { font-weight: 700; color: #374151; margin-bottom: 4px; }
+    .log-stages { margin: 0; padding-left: 18px; }
+    .log-stages li { padding: 1px 0; }
+    .log-stage.made { color: #166534; }
+    .log-stage.none { color: #9ca3af; }
+    .log-stage.skipped { color: #9ca3af; font-style: italic; }
+    .log-stage.early { color: #b45309; font-weight: 700; }
+    .log-run { color: #6b7280; font-style: italic; }
+    .log-model { color: #3730a3; }
+    .log-rank th, .log-rank td { padding: 3px 8px; }
+    .log-rank tr.winner td { background: #eff6ff; font-weight: 600; }
+    .log-note { color: #6b7280; font-size: 11px; margin-top: 4px; }
+
+    /* Rules panel */
+    .rules-panel { background: #faf5ff; border: 1px solid #e9d5ff; border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
+    .rules-head { font-size: 13px; margin-bottom: 8px; }
+    .rules-table { margin-bottom: 10px; }
+    .rule-form-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .rule-form-row input, .rule-form-row select { font: inherit; font-size: 12px; padding: 5px 7px; border: 1px solid #d8b4fe; border-radius: 6px; }
+    .rule-form-row input[type=number] { width: 96px; }
+    .rules-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+    /* Corrections */
+    .correction-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; border-top: 1px dashed #e5e7eb; padding-top: 10px; }
+    .correction-row.has-correction { background: #fffbeb; border-radius: 8px; padding: 8px; }
+    .correction-tag { font-size: 12px; font-weight: 700; color: #92400e; }
+    .correction-cat { font: inherit; font-size: 12px; padding: 5px 7px; border: 1px solid #c8d0dc; border-radius: 6px; }
+    .correction-note { font: inherit; font-size: 12px; padding: 5px 7px; border: 1px solid #c8d0dc; border-radius: 6px; flex: 1; min-width: 220px; }
+    .correction-fix { font-size: 12px; padding: 5px 9px; }
+    .correction-status { font-size: 11px; color: #b45309; font-weight: 700; }
+
+    /* In-store preview modal */
+    .preview-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.78); display: none; z-index: 1000; }
+    .preview-overlay.open { display: flex; align-items: stretch; justify-content: center; }
+    .preview-shell { display: flex; flex-direction: column; width: 100%; }
+    .preview-toolbar { display: flex; gap: 12px; align-items: center; padding: 10px 16px; color: #fff; flex-wrap: wrap; }
+    .preview-toolbar button { background: #1f2937; color: #fff; border-color: #374151; }
+    .preview-close { margin-left: auto; }
+    .preview-spec { font-size: 12px; color: #cbd5e1; }
+    .preview-info { font-size: 12px; color: #e2e8f0; }
+    .preview-warn { color: #fca5a5; font-weight: 700; }
+    .preview-scroll { flex: 1; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .preview-page { position: relative; background: #fff; box-shadow: 0 0 0 1px #94a3b8, 0 10px 40px rgba(0,0,0,0.5); }
+    .preview-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #fff; }
   </style>
 </head>
 <body>
-  <h1>Label Detection — Test Harness</h1>
-  <p class="sub">Runs the <strong>real</strong> detection pipeline (heuristics + ONNX model) over fixtures or a selected local label corpus. Open this page at <code>chrome-extension://&lt;id&gt;/dev/test.html</code> so the model can load.</p>
+  <h1>Label Detection — Training Studio</h1>
+  <p class="sub">Runs the <strong>real</strong> detection pipeline (heuristics + ONNX model) over fixtures or a local label corpus, with full per-label logs, an in-store 4×6 preview, variant rules, and a tagged fix-report. Open at <code>chrome-extension://&lt;id&gt;/dev/test.html</code> so the model can load.</p>
 
   <div class="toolbar">
     <button id="runFixtures" type="button">Run bundled fixtures</button>
-    <label style="font-size:13px;">label corpus:
+    <label class="field">label corpus:
       <input id="corpusPicker" type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.heic,.heif" webkitdirectory multiple>
     </label>
-    <select id="groupPicker" disabled>
-      <option value="">Select group</option>
-    </select>
+    <select id="groupPicker" disabled><option value="">Select group</option></select>
     <button id="runCorpusGroup" type="button" disabled>Run group</button>
     <button id="runLocked" type="button" disabled>Run locked</button>
     <button id="lockGroup" type="button" disabled>Lock baseline</button>
-    <button id="exportTraining" type="button">Export training data</button>
-    <label style="font-size:13px;">import training:
-      <input id="importTraining" type="file" accept=".json,application/json">
-    </label>
-    <label style="font-size:13px;">or test any file:
+    <label class="field">or test any file:
       <input id="filePicker" type="file" accept=".pdf,.png,.jpg,.jpeg,.gif">
+    </label>
+    <span class="toolbar-sep"></span>
+    <span id="toolbarExtra"></span>
+    <span class="toolbar-sep"></span>
+    <button id="exportAll" type="button">Export state</button>
+    <label class="field">import state:
+      <input id="importAll" type="file" accept=".json,application/json">
     </label>
     <span id="status" style="font-size:13px; color:#4b5563;"></span>
   </div>
@@ -94,7 +162,7 @@
   <p class="summary" id="summary"></p>
   <div id="results"></div>
 
-  <p class="note">Tip: drop new sample labels into <code>debug-ebay-images/</code> or <code>debug-online-return-images/</code> and add their filenames to the <code>FIXTURES</code> list in <code>test.js</code>. A green pill = a confident full-label detection; amber = a crop/fallback variant; red = nothing usable.</p>
+  <p class="note">Drop a folder of real labels via “label corpus” (one subfolder per carrier/type). Green pill = confident full label; amber = crop/fallback; red = nothing usable. Click any crop thumbnail for the in-store 4×6 preview. Tag what's wrong under “Correction”, then <strong>Export fix-report</strong>.</p>
 
   <script src="../lib/pdf.min.js"></script>
   <script src="../lib/ort.min.js"></script>
@@ -104,6 +172,11 @@
   <script src="../detection/pdf-processor.js"></script>
   <script src="../detection/png-processor.js"></script>
   <script src="../config.js"></script>
-  <script src="test.js"></script>
+  <script src="studio/core.js"></script>
+  <script src="studio/stats.js"></script>
+  <script src="studio/log-panel.js"></script>
+  <script src="studio/preview.js"></script>
+  <script src="studio/rules.js"></script>
+  <script src="studio/corrections.js"></script>
 </body>
 </html>

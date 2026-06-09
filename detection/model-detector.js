@@ -1,6 +1,16 @@
 (function () {
   "use strict";
 
+  // Optional, no-op-by-default trace sink for the dev training studio (mirrors the
+  // one in label-detector.js). Production never sets it. Never throws.
+  let traceSink = null;
+  function setTraceSink(fn) { traceSink = typeof fn === "function" ? fn : null; }
+  function clearTrace() { traceSink = null; }
+  function trace(stage, payload) {
+    if (!traceSink) return;
+    try { traceSink({ stage, ...(payload || {}) }); } catch (_) {}
+  }
+
   const MODEL_SIZE = 960;
   const MODEL_PATH = "models/shipping-label.onnx";
   const MIN_CONFIDENCE = 0.5;
@@ -43,7 +53,21 @@
       }
     }
 
-    if (!best || !isAcceptedPrediction(best.prediction, best.page.canvas)) return null;
+    if (!best) {
+      trace("model-prediction", { found: false, note: "model returned no box above candidate threshold" });
+      return null;
+    }
+    const accepted = isAcceptedPrediction(best.prediction, best.page.canvas);
+    trace("model-prediction", {
+      found: true,
+      accepted,
+      pageIndex: best.page.pageIndex,
+      rawConfidence: best.prediction.confidence,
+      acceptedConfidence: best.prediction.acceptedConfidence,
+      score: best.prediction.score,
+      rect: best.prediction.rect
+    });
+    if (!accepted) return null;
 
     return {
       confidence: Math.max(best.prediction.confidence, best.prediction.acceptedConfidence),
@@ -189,6 +213,9 @@
 
   window.LabelExtractorModelDetector = {
     detectPages,
-    warmUp
+    warmUp,
+    // Dev training studio hooks (no-op in production):
+    setTraceSink,
+    clearTrace
   };
 })();
