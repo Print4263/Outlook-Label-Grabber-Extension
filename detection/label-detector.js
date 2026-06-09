@@ -468,7 +468,11 @@
 
   function looksLikeCompleteEmbeddedLabel(canvas, barcodeRegions) {
     if (barcodeRegions.length >= 2) return true;
-    if (!barcodeRegions.length) return false;
+    // No barcode detected (common on image-only PDFs where the scan misses):
+    // a large, cleanly 4:6/6:4-shaped embedded image is almost certainly the
+    // whole label on its own. Trust the geometry so we don't fall through to a
+    // border detector that grabs an inner sub-section ("doesn't fully show").
+    if (!barcodeRegions.length) return isLabelSizedImage(canvas);
 
     const area = canvas.width * canvas.height;
     const barcodeArea = barcodeRegions.reduce((sum, region) => sum + region.width * region.height, 0);
@@ -481,6 +485,15 @@
       && region.y > canvas.height * 0.45
     ));
     return hasLargeHorizontalBarcode && canvas.height > canvas.width * 1.15;
+  }
+
+  // A large embedded image whose aspect is ~4:6 or ~6:4 is a label by shape
+  // alone, even when no barcode is detected on it.
+  function isLabelSizedImage(canvas) {
+    const aspect = canvas.width / Math.max(1, canvas.height);
+    const tol = 0.05;
+    const labelShaped = Math.abs(aspect - 4 / 6) <= tol || Math.abs(aspect - 6 / 4) <= tol;
+    return labelShaped && Math.min(canvas.width, canvas.height) >= 600;
   }
 
   // UPS "View/Print Label" / fold-and-tear sheets: instructions on top, the real
