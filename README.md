@@ -9,10 +9,12 @@ Microsoft Edge MV3 extension for extracting and printing shipping labels. Runs e
 - Keeps Recent downloads as a backup when staff uses Outlook's normal download button.
 - Detects shipping labels from PDF, PNG, JPG, JPEG, GIF, HEIC, and HEIF files using local detection (HEIC/HEIF are converted to PNG automatically).
 - Detects labels even when they are placed sideways or rotated 90° in the source PDF (common on UPS and return labels).
+- Detects labels embedded as a full-page image and single 4x6 label pages, and expands border crops outward to include a barcode or data-matrix that sits at the label's edge (so the matrix isn't clipped).
 - Auto-orients results upright so sideways labels print correctly as 4x6 without manual rotation.
 - Shows label results with rotate, crop, print, and expand actions.
+- **The on-screen preview matches the printed output** — surrounding white is trimmed and the label is filled to the 4x6 — so staff can trust the preview without manually cropping.
 - **Expand** loads the full source page so you can crop to the label yourself when auto-detection comes up short.
-- Prints in 4x6 label mode.
+- Prints in 4x6 label mode, trimming surrounding white and filling the label to the sheet.
 - **Display size** control (collapsible, at the bottom) scales the whole panel for low-resolution register screens. It auto-fits to the window on first open and remembers the setting per device.
 - Includes Staff mode by default and Lab mode for debug details.
 
@@ -48,7 +50,9 @@ The chosen size is saved on that device only and is applied before the panel pai
 
 ## Project structure
 
-The UI runs from `sidepanel.html`, which loads a lean core (`sidepanel.js` — state, init, event wiring, rendering, and the extraction/print orchestration) plus four focused, plain-script modules under `app/`: `app/print.js` (monochrome conversion + print HTML + the print window flow), `app/downloads.js` (the Recent-downloads list, intake, and Use/Show/Clear/preview actions), `app/crop.js` (the crop editor plus image transforms like auto-orient and rotate-to-portrait), and `app/detect.js` (turning local-detector output into ranked label candidates and fallbacks). These are classic (non-module) scripts that share global scope, so they behave exactly as the original single file. The on-device detection engine lives in `detection/` (`label-detector.js`, `pdf-processor.js`, `png-processor.js`, `crop-engine.js`, `model-detector.js`), third-party libraries in `lib/` (pdf.js, ONNX Runtime, heic2any), the ONNX model in `models/`, the service worker in `background.js`, and the Outlook/page content scripts in `outlook-reader.js` and `page-label-drag.js`. The `dev/` folder holds the detection test harness and sample fixtures and is not part of the shipped extension.
+The UI runs from `sidepanel.html`, which loads a lean core (`sidepanel.js` — state, init, event wiring, rendering, and the extraction/print orchestration) plus four focused, plain-script modules under `app/`: `app/print.js` (monochrome conversion + print HTML + the print window flow), `app/downloads.js` (the Recent-downloads list, intake, and Use/Show/Clear/preview actions), `app/crop.js` (the crop editor plus image transforms like auto-orient and rotate-to-portrait), and `app/detect.js` (turning local-detector output into ranked label candidates and fallbacks). These are classic (non-module) scripts that share global scope, so they behave exactly as the original single file. The on-device detection engine lives in `detection/` (`label-detector.js`, `pdf-processor.js`, `png-processor.js`, `crop-engine.js`, `model-detector.js`), third-party libraries in `lib/` (pdf.js, ONNX Runtime, heic2any), the ONNX model in `models/`, the service worker in `background.js`, and the Outlook/page content scripts in `outlook-reader.js` and `page-label-drag.js`.
+
+The `dev/` folder holds the **Training Studio** (`dev/test.html` plus the `dev/studio/` modules) for measuring and tuning detection against a local folder of real labels — it runs the real pipeline and provides a wins-by-detector tally, full per-label logs, an in-store 4x6 preview, studio-only variant rules, and a tagged fix-report of what to fix. It is not part of the shipped extension. To support it, the detection modules expose optional trace hooks (`setTraceSink`/`clearTrace`) plus score helpers; these are no-ops in normal use (the sink stays null) and have no effect on the shipped extension.
 
 ## Notes
 
