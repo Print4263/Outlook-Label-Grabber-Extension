@@ -4,9 +4,10 @@
 // loadImage, escapeHtml, clamp, and state, which remain defined in sidepanel.js.
 
 // Quiet-zone border left around the trimmed label content when filling the 4x6
-// sheet, as a fraction of each dimension. Keeps content off the physical edge.
-// Tunable: raise for more breathing room, lower to make the label bigger.
-const LABEL_PRINT_MARGIN_RATIO = 0.06;
+// sheet, in inches, equal on all sides. Just above the printer's ~0.16in
+// non-printable edge so the label is as large as possible without clipping.
+// Tunable: lower = bigger label (risk edge clip), higher = more breathing room.
+const LABEL_PRINT_MARGIN_INCH = 0.2;
 
 function applyUnsharpMask(lums, width, height, radius, amount) {
   const kernelSize = radius * 2 + 1;
@@ -81,10 +82,8 @@ async function resizeToLabelDpi(dataUrl, dpi = 203) {
   // jammed against the physical cut edge (thermal printers can clip the very edge,
   // and barcodes need a quiet zone). The remaining area stays the label's ~4:6
   // aspect, so this is a near-uniform scale into the inset box.
-  const marginRatio = LABEL_PRINT_MARGIN_RATIO;
-  const mx = Math.round(targetW * marginRatio);
-  const my = Math.round(targetH * marginRatio);
-  ctx.drawImage(trimmed.canvas, 0, 0, trimmed.width, trimmed.height, mx, my, targetW - mx * 2, targetH - my * 2);
+  const m = Math.round(LABEL_PRINT_MARGIN_INCH * dpi);
+  ctx.drawImage(trimmed.canvas, 0, 0, trimmed.width, trimmed.height, m, m, targetW - m * 2, targetH - m * 2);
   return canvas.toDataURL("image/png");
 }
 
