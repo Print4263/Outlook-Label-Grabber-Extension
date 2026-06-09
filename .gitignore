@@ -7,3 +7,14 @@ debug-*-images/
 *.pem
 .DS_Store
 Thumbs.db
+
+# Customer label corpora (PII) — never commit
+Labels/
+dev/samples/
+
+# Training Studio exports (may contain label notes/geometry)
+fix-report-*.json
+fix-report-*.md
+label-rules-*.json
+label-rules-spec-*.md
+label-studio-state-*.json

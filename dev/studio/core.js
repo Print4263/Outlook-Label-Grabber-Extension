@@ -168,6 +168,7 @@
     let error = null;
     let trace = [];
     let rulesFired = [];
+    let detectorOriginal = null;
     try {
       state._traceBuffer = [];
       const out = await detect(file);
@@ -176,6 +177,9 @@
       page = out.page;
       // Studio-only re-ranking via the rules engine (replaces v1 preferred-candidate).
       rulesFired = Studio.rules?.applyToCandidates?.(label, candidates, { page }) || [];
+      // Snapshot the detector's REAL top choice before any stored manual crop or
+      // in-session edit can mutate it — this is the "before" for the fix-report.
+      detectorOriginal = snapshotCandidate(candidates[0]);
       await applyStoredManualCrop(label, candidates, page);
     } catch (e) {
       error = e?.message || String(e);
@@ -183,8 +187,27 @@
       state._traceBuffer = null;
     }
     const ms = Math.round(performance.now() - started);
-    return buildCard({ label, file, group, candidates, page, error, ms, trace, rulesFired });
+    return buildCard({ label, file, group, candidates, page, error, ms, trace, rulesFired, detectorOriginal });
   }
+
+  // Pristine snapshot of the detector's chosen candidate (geometry + reason),
+  // used by the corrections fix-report as the untouched "before".
+  function snapshotCandidate(c) {
+    if (!c) return null;
+    return {
+      reason: c.reason || "",
+      confidence: Number(c.confidence || 0),
+      carrier: c.carrier || "",
+      variantName: c.variantName || "",
+      width: Number(c.label?.width || 0),
+      height: Number(c.label?.height || 0),
+      cropRect: c.cropRect ? { ...c.cropRect } : null,
+      sourceWidth: Number(c.sourceWidth || 0),
+      sourceHeight: Number(c.sourceHeight || 0),
+      needsCrop: Boolean(c.needsCrop)
+    };
+  }
+  Studio.snapshotCandidate = snapshotCandidate;
 
   // --- Grading ---------------------------------------------------------------
   function grade(top) {
@@ -206,14 +229,14 @@
   };
 
   // --- Card rendering --------------------------------------------------------
-  function buildCard({ label, file, group = "", candidates, page, error, ms, trace = [], rulesFired = [] }) {
+  function buildCard({ label, file, group = "", candidates, page, error, ms, trace = [], rulesFired = [], detectorOriginal = null }) {
     const top = candidates[0];
     const g = error ? { cls: "err", text: "ERROR" } : grade(top);
     const key = label;
 
     const card = document.createElement("div");
     card.className = "case";
-    const cardModel = { element: card, grade: g, top, candidates, group, key, ms, page, file, trace, error, rulesFired };
+    const cardModel = { element: card, grade: g, top, candidates, group, key, ms, page, file, trace, error, rulesFired, detectorOriginal };
 
     const h2 = document.createElement("h2");
     const pill = document.createElement("span");
@@ -883,6 +906,7 @@
       filePicker: byId("filePicker"),
       exportAll: byId("exportAll"),
       importAll: byId("importAll"),
+      resetCrops: byId("resetCrops"),
       status: byId("status"),
       groupbar: byId("groupbar"),
       summary: byId("summary"),
@@ -907,6 +931,14 @@
       });
     });
     Studio.els.exportAll?.addEventListener("click", exportAll);
+    Studio.els.resetCrops?.addEventListener("click", () => {
+      const n = Object.keys(state.manualCrops).length;
+      if (!n) { setStatus("No stored crop edits to clear."); return; }
+      if (!confirm(`Clear ${n} stored manual crop edit(s)? Your corrections and fix-report are kept. Re-run a group afterward to see the detector's raw output.`)) return;
+      state.manualCrops = {};
+      Studio.save("manualCrops");
+      setStatus(`Cleared ${n} crop edit(s). Re-run a group to see raw detector output.`);
+    });
     Studio.els.importAll?.addEventListener("change", () => {
       const file = Studio.els.importAll.files?.[0];
       if (file) importAll(file).finally(() => { Studio.els.importAll.value = ""; });

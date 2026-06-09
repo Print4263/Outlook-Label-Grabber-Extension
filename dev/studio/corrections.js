@@ -16,19 +16,22 @@
   function upsert(cardModel, patch) {
     const key = cardModel.key;
     const top = cardModel.top || {};
+    // Prefer the pristine detector snapshot (captured before any manual crop) so
+    // the report's "before" is what the detector actually chose, not the user's fix.
+    const det = cardModel.detectorOriginal || {};
     const base = state.corrections[key] || {
-      detector: top.reason || "",
-      carrier: top.carrier || "",
+      detector: det.reason || top.reason || "",
+      carrier: det.carrier || top.carrier || "",
       group: cardModel.group || "",
       fileName: cardModel.file?.name || "",
       original: {
-        reason: top.reason || "",
-        confidence: Number(top.confidence || 0),
-        width: Number(top.label?.width || 0),
-        height: Number(top.label?.height || 0),
-        cropRect: top.cropRect || null,
-        sourceWidth: Number(top.sourceWidth || 0),
-        sourceHeight: Number(top.sourceHeight || 0)
+        reason: det.reason || top.reason || "",
+        confidence: Number(det.confidence ?? top.confidence ?? 0),
+        width: Number(det.width || top.label?.width || 0),
+        height: Number(det.height || top.label?.height || 0),
+        cropRect: det.cropRect || top.cropRect || null,
+        sourceWidth: Number(det.sourceWidth || top.sourceWidth || 0),
+        sourceHeight: Number(det.sourceHeight || top.sourceHeight || 0)
       },
       corrected: null
     };
