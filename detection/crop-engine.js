@@ -202,6 +202,92 @@
     };
   }
 
+  // ── Faint rule removal ──────────────────────────────────────────────────
+  // Carrier "View/Print Label" sheets (UPS CampusShip etc.) draw long light-grey
+  // fold/separator rules across the page. They are decorative, but every pixel
+  // scan (content bounds, whitespace trim, crop snap) reads them as content, so
+  // automatic crops stop at the rule instead of the label. A rule line is mostly
+  // faint-grey, spans a wide run, holds almost no dark pixels, and the whole band
+  // is only a few pixels thick — erase the faint pixels in such bands to white.
+  // Dark pixels are never touched, so label borders, text, and barcodes are safe.
+  const RULE_FAINT_MIN_LUM = 140;        // below this = real (dark) content, never erased
+  const RULE_FAINT_MAX_LUM = 245;        // above this = already treated as white
+  const RULE_MIN_SPAN_RATIO = 0.25;      // rule must cross at least this much of the page
+  const RULE_MAX_DARK_RATIO = 0.003;     // more dark pixels than this = text/graphics line
+  const RULE_MAX_THICKNESS_RATIO = 0.008;// thicker faint bands are shading, not rules
+
+  function eraseFaintRules(canvas) {
+    const { width, height } = canvas;
+    if (!width || !height) return false;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const imageData = ctx.getImageData(0, 0, width, height);
+    const erasedRows = eraseFaintRuleBands(imageData, "row");
+    const erasedCols = eraseFaintRuleBands(imageData, "column");
+    if (erasedRows || erasedCols) ctx.putImageData(imageData, 0, 0);
+    return erasedRows || erasedCols;
+  }
+
+  function eraseFaintRuleBands(imageData, axis) {
+    const { width, height, data } = imageData;
+    const horizontal = axis === "row";
+    const lineCount = horizontal ? height : width;
+    const lineLength = horizontal ? width : height;
+    const minSpan = Math.floor(lineLength * RULE_MIN_SPAN_RATIO);
+    const maxDark = Math.max(2, Math.floor(lineLength * RULE_MAX_DARK_RATIO));
+    const maxThickness = Math.max(4, Math.round(lineCount * RULE_MAX_THICKNESS_RATIO));
+
+    // Pass 1: classify each line. Bails out of a line at the first sign of real
+    // (dark) content, so text/barcode lines cost almost nothing.
+    const ruleLike = new Uint8Array(lineCount);
+    for (let line = 0; line < lineCount; line += 1) {
+      let faint = 0;
+      let dark = 0;
+      for (let pos = 0; pos < lineLength; pos += 1) {
+        const x = horizontal ? pos : line;
+        const y = horizontal ? line : pos;
+        const i = (y * width + x) * 4;
+        if (data[i + 3] < 16) continue;
+        const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        if (lum < RULE_FAINT_MIN_LUM) {
+          dark += 1;
+          if (dark > maxDark) break;
+        } else if (lum <= RULE_FAINT_MAX_LUM) {
+          faint += 1;
+        }
+      }
+      ruleLike[line] = dark <= maxDark && faint >= minSpan ? 1 : 0;
+    }
+
+    // Pass 2: erase faint pixels inside thin runs of rule-like lines. Runs
+    // thicker than maxThickness are left alone — that is shading, not a rule.
+    let erased = false;
+    let runStart = -1;
+    for (let line = 0; line <= lineCount; line += 1) {
+      if (line < lineCount && ruleLike[line]) {
+        if (runStart < 0) runStart = line;
+        continue;
+      }
+      if (runStart >= 0 && line - runStart <= maxThickness) {
+        for (let bandLine = runStart; bandLine < line; bandLine += 1) {
+          for (let pos = 0; pos < lineLength; pos += 1) {
+            const x = horizontal ? pos : bandLine;
+            const y = horizontal ? bandLine : pos;
+            const i = (y * width + x) * 4;
+            if (data[i + 3] < 16) continue;
+            const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+            if (lum >= RULE_FAINT_MIN_LUM && lum <= RULE_FAINT_MAX_LUM) {
+              data[i] = data[i + 1] = data[i + 2] = 255;
+              data[i + 3] = 255;
+              erased = true;
+            }
+          }
+        }
+      }
+      runStart = -1;
+    }
+    return erased;
+  }
+
   async function rotateDataUrl(dataUrl, degrees) {
     const image = await loadImage(dataUrl);
     const radians = (degrees * Math.PI) / 180;
@@ -245,6 +331,7 @@
     cropCanvas,
     rotateDataUrl,
     canvasToLabel,
-    imageDataToCanvas
+    imageDataToCanvas,
+    eraseFaintRules
   };
 })();

@@ -96,6 +96,63 @@
     return (ratioFromTop > 0.05 && ratioFromTop < 0.95) ? ratioFromTop : null;
   }
 
+  // Bounding rects (scale-1 viewport coords, y from top) of standalone
+  // "FOLD HERE" marker text items. The markers are fold instructions in the page
+  // margin, not label content — left in place, their dark glyphs survive the
+  // faint-rule eraser and keep anchoring content-bounds scans (auto-crop and the
+  // print trim) to the margin instead of the label. Only whole-item matches are
+  // taken ("FOLD HERE" / "FOLD"; "HERE" only near a matched FOLD), so body text
+  // that merely contains the word "fold" is never touched. The rect is built from
+  // the item's baseline transform, so rotated/vertical markers are covered too.
+  function findFoldMarkerRects(items, page) {
+    const pageHeight = page.getViewport({ scale: 1 }).height;
+    const foldItems = [];
+    const hereItems = [];
+    for (const item of items || []) {
+      const str = String(item.str || "").trim();
+      if (!item.transform) continue;
+      if (/^fold(\s+here)?$/i.test(str)) foldItems.push(item);
+      else if (/^here$/i.test(str)) hereItems.push(item);
+    }
+    if (!foldItems.length) return [];
+
+    // "HERE" alone is only a marker when it sits right next to a "FOLD" item
+    // (the marker is sometimes split into two text items).
+    const near = (a, b, reach) =>
+      Math.hypot(a.transform[4] - b.transform[4], a.transform[5] - b.transform[5]) <= reach;
+    const markers = foldItems.concat(hereItems.filter((here) => {
+      const reach = Math.hypot(here.transform[0], here.transform[1]) * 12;
+      return foldItems.some((fold) => near(here, fold, reach));
+    }));
+
+    return markers.map((item) => {
+      const t = item.transform;
+      const baselineLen = Math.hypot(t[0], t[1]) || 1;
+      const ux = t[0] / baselineLen;
+      const uy = t[1] / baselineLen;
+      const vx = -uy;
+      const vy = ux;
+      const w = Number(item.width || 0) || baselineLen;
+      const h = Number(item.height || 0) || baselineLen;
+      // Corners in PDF space (y up), with a descender allowance below the baseline.
+      const corners = [
+        [t[4] - vx * h * 0.35, t[5] - vy * h * 0.35],
+        [t[4] + ux * w - vx * h * 0.35, t[5] + uy * w - vy * h * 0.35],
+        [t[4] + vx * h, t[5] + vy * h],
+        [t[4] + ux * w + vx * h, t[5] + uy * w + vy * h]
+      ];
+      const xs = corners.map((c) => c[0]);
+      const ys = corners.map((c) => pageHeight - c[1]); // flip to viewport coords
+      const pad = Math.max(2, h * 0.3);
+      return {
+        x: Math.min(...xs) - pad,
+        y: Math.min(...ys) - pad,
+        width: Math.max(...xs) - Math.min(...xs) + pad * 2,
+        height: Math.max(...ys) - Math.min(...ys) + pad * 2
+      };
+    });
+  }
+
   async function process(captured) {
     try {
       const pdfjsLib = await loadPdfJs();
@@ -109,10 +166,12 @@
           const page = await pdf.getPage(pageNum);
           let text = "";
           let foldRatio = null;
+          let foldMarkerRects = [];
           try {
             const textContent = await page.getTextContent();
             text = textContent.items.map((item) => item.str).join(" ");
             foldRatio = findFoldRatio(textContent.items, page, text);
+            foldMarkerRects = findFoldMarkerRects(textContent.items, page);
           } catch (_) {}
           const embeddedImageInfo = await extractEmbeddedImages(page, pdfjsLib);
           const embeddedImages = embeddedImageInfo.images;
@@ -123,6 +182,7 @@
             page,
             text,
             foldRatio,
+            foldMarkerRects,
             embeddedImages,
             embeddedImageCount,
             priority: scoreLabelPage(text) + Math.min(embeddedImageCount, 3) * 0.75
@@ -181,9 +241,11 @@
     const idx = Math.min(Math.max(0, Number(pageIndex) || 0), pdf.numPages - 1);
     const page = await pdf.getPage(idx + 1);
     let text = "";
+    let foldMarkerRects = [];
     try {
       const textContent = await page.getTextContent();
       text = textContent.items.map((item) => item.str).join(" ");
+      foldMarkerRects = findFoldMarkerRects(textContent.items, page);
     } catch (_) {}
     return renderPageEntry({
       pageIndex: idx,
@@ -191,12 +253,13 @@
       text,
       embeddedImages: [],
       embeddedImageCount: 0,
-      foldRatio: null
+      foldRatio: null,
+      foldMarkerRects
     }, pdf.numPages);
   }
 
   async function renderPageEntry(entry, pageCount) {
-    const { pageIndex, page, text, embeddedImages, embeddedImageCount, foldRatio } = entry;
+    const { pageIndex, page, text, embeddedImages, embeddedImageCount, foldRatio, foldMarkerRects } = entry;
     const naturalViewport = page.getViewport({ scale: 1 });
     const renderScale = Math.min(4, Math.max(3, 1200 / naturalViewport.width));
     const viewport = page.getViewport({ scale: renderScale });
@@ -210,6 +273,27 @@
       canvasContext: canvas.getContext("2d", { willReadFrequently: true }),
       viewport
     }).promise;
+
+    // Erase "FOLD HERE" marker text and the long faint-grey fold/separator rules
+    // (UPS "View/Print Label" sheets) before anything reads pixels — both otherwise
+    // count as content and stop auto-crop/whitespace-trim at the page margin
+    // instead of the label's true edge. The fold detection itself is unaffected:
+    // foldRatio comes from the text items, not from pixels. Must run before the
+    // pixel caches (pixelsFor here, getCanvasData in the detector) take their
+    // snapshot of this canvas.
+    if (Array.isArray(foldMarkerRects) && foldMarkerRects.length) {
+      const eraseCtx = canvas.getContext("2d", { willReadFrequently: true });
+      eraseCtx.fillStyle = "#fff";
+      for (const rect of foldMarkerRects) {
+        eraseCtx.fillRect(
+          Math.floor(rect.x * renderScale),
+          Math.floor(rect.y * renderScale),
+          Math.ceil(rect.width * renderScale),
+          Math.ceil(rect.height * renderScale)
+        );
+      }
+    }
+    try { window.LabelExtractorCrop.eraseFaintRules(canvas); } catch (_) {}
 
     return {
       pageIndex,
