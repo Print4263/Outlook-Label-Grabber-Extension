@@ -11,6 +11,16 @@
     try { traceSink({ stage, ...(payload || {}) }); } catch (_) {}
   }
 
+  // Resolve extension assets without chrome.runtime so the dev training studio
+  // (plain file/http, no extension context) can run the model too. Mirrors
+  // assetUrl() in pdf-processor.js.
+  const scriptUrl = document.currentScript?.src || "";
+
+  function assetUrl(path) {
+    if (globalThis.chrome?.runtime?.getURL) return chrome.runtime.getURL(path);
+    return new URL(`../${path}`, scriptUrl || window.location.href).href;
+  }
+
   const MODEL_SIZE = 960;
   const MODEL_PATH = "models/shipping-label.onnx";
   const MIN_CONFIDENCE = 0.5;
@@ -27,7 +37,7 @@
     if (ortLoadPromise) return ortLoadPromise;
     ortLoadPromise = new Promise((resolve, reject) => {
       const script = document.createElement("script");
-      script.src = chrome.runtime.getURL("lib/ort.min.js");
+      script.src = assetUrl("lib/ort.min.js");
       script.onload = () => resolve(window.ort);
       script.onerror = () => {
         ortLoadPromise = null;
@@ -94,9 +104,9 @@
 
   async function getSession() {
     if (!sessionPromise) {
-      window.ort.env.wasm.wasmPaths = chrome.runtime.getURL("lib/");
+      window.ort.env.wasm.wasmPaths = assetUrl("lib/");
       window.ort.env.wasm.numThreads = 1;
-      sessionPromise = window.ort.InferenceSession.create(chrome.runtime.getURL(MODEL_PATH), {
+      sessionPromise = window.ort.InferenceSession.create(assetUrl(MODEL_PATH), {
         executionProviders: ["wasm"],
         graphOptimizationLevel: "all"
       });
