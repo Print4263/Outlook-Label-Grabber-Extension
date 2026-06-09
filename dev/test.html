@@ -10,9 +10,11 @@
     h1 { font-size: 20px; margin: 0 0 4px; }
     .sub { color: #4b5563; margin: 0 0 16px; font-size: 13px; }
     .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+    .toolbar select { font: inherit; border: 1px solid #c8d0dc; border-radius: 8px; background: #fff; padding: 7px 10px; }
     button { font: inherit; border: 1px solid #c8d0dc; border-radius: 8px; background: #fff; padding: 8px 14px; cursor: pointer; }
     button:hover { border-color: #9aa8ba; }
     #runFixtures { background: linear-gradient(180deg, #2563eb, #1d4ed8); color: #fff; border-color: #1d4ed8; }
+    #runCorpusGroup { background: linear-gradient(180deg, #0f766e, #115e59); color: #fff; border-color: #115e59; }
     .summary { margin: 0 0 16px; font-size: 13px; color: #374151; }
     .case { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
     .case h2 { font-size: 14px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
@@ -22,6 +24,13 @@
     .pill.warn { background: #fef9c3; color: #854d0e; }
     .pill.bad { background: #fee2e2; color: #991b1b; }
     .pill.err { background: #f3f4f6; color: #374151; }
+    .pill.pass { background: #dcfce7; color: #166534; }
+    .pill.fail { background: #fee2e2; color: #991b1b; }
+    .judgement { display: inline-flex; gap: 4px; margin-left: auto; }
+    .judgement button { padding: 4px 8px; border-radius: 6px; font-weight: 700; }
+    .judgement button.active.pass { background: #16a34a; border-color: #15803d; color: #fff; }
+    .judgement button.active.fail { background: #dc2626; border-color: #b91c1c; color: #fff; }
+    .groupbar { display: flex; gap: 10px; align-items: center; margin: -8px 0 16px; flex-wrap: wrap; font-size: 13px; color: #374151; }
     .row { display: flex; gap: 16px; align-items: flex-start; }
     .source img { max-width: 180px; max-height: 220px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; }
     .source .meta { font-size: 11px; color: #6b7280; margin-top: 4px; }
@@ -30,7 +39,26 @@
     th { color: #6b7280; font-weight: 600; }
     tr.chosen td { background: #eff6ff; }
     tr.chosen td:first-child { font-weight: 700; }
+    .prefer-candidate { padding: 3px 8px; border-radius: 6px; font-size: 12px; }
+    tr.chosen .prefer-candidate { background: #2563eb; border-color: #1d4ed8; color: #fff; }
     .thumb { width: 70px; height: 70px; object-fit: contain; border: 1px solid #e5e7eb; border-radius: 4px; background: #fff; }
+    .crop-tweak { padding: 4px 8px; border-radius: 6px; font-size: 12px; }
+    .crop-editor-inline { margin-top: 12px; border-top: 1px solid #e5e7eb; padding-top: 12px; }
+    .crop-edit-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+    .crop-stage { width: min(980px, 100%); max-height: 82vh; overflow: auto; background: #111827; border: 1px solid #9ca3af; border-radius: 6px; }
+    .crop-canvas { position: relative; width: 100%; }
+    .crop-canvas img { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; }
+    .crop-box { position: absolute; border: 2px solid #2563eb; background: rgba(37, 99, 235, 0.12); box-sizing: border-box; cursor: move; }
+    .crop-handle { position: absolute; width: 12px; height: 12px; border-radius: 50%; background: #2563eb; border: 2px solid #fff; box-sizing: border-box; }
+    .crop-handle.nw { left: -7px; top: -7px; cursor: nwse-resize; }
+    .crop-handle.n { left: calc(50% - 6px); top: -7px; cursor: ns-resize; }
+    .crop-handle.ne { right: -7px; top: -7px; cursor: nesw-resize; }
+    .crop-handle.e { right: -7px; top: calc(50% - 6px); cursor: ew-resize; }
+    .crop-handle.se { right: -7px; bottom: -7px; cursor: nwse-resize; }
+    .crop-handle.s { left: calc(50% - 6px); bottom: -7px; cursor: ns-resize; }
+    .crop-handle.sw { left: -7px; bottom: -7px; cursor: nesw-resize; }
+    .crop-handle.w { left: -7px; top: calc(50% - 6px); cursor: ew-resize; }
+    .manual-badge { color: #1d4ed8; font-size: 11px; font-weight: 700; }
     .warns { color: #92400e; font-size: 11px; }
     .conf { font-variant-numeric: tabular-nums; }
     code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; }
@@ -39,16 +67,30 @@
 </head>
 <body>
   <h1>Label Detection — Test Harness</h1>
-  <p class="sub">Runs the <strong>real</strong> detection pipeline (heuristics + ONNX model) over the bundled fixtures. Open this page at <code>chrome-extension://&lt;id&gt;/dev/test.html</code> so the model can load.</p>
+  <p class="sub">Runs the <strong>real</strong> detection pipeline (heuristics + ONNX model) over fixtures or a selected local label corpus. Open this page at <code>chrome-extension://&lt;id&gt;/dev/test.html</code> so the model can load.</p>
 
   <div class="toolbar">
     <button id="runFixtures" type="button">Run bundled fixtures</button>
+    <label style="font-size:13px;">label corpus:
+      <input id="corpusPicker" type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.heic,.heif" webkitdirectory multiple>
+    </label>
+    <select id="groupPicker" disabled>
+      <option value="">Select group</option>
+    </select>
+    <button id="runCorpusGroup" type="button" disabled>Run group</button>
+    <button id="runLocked" type="button" disabled>Run locked</button>
+    <button id="lockGroup" type="button" disabled>Lock baseline</button>
+    <button id="exportTraining" type="button">Export training data</button>
+    <label style="font-size:13px;">import training:
+      <input id="importTraining" type="file" accept=".json,application/json">
+    </label>
     <label style="font-size:13px;">or test any file:
       <input id="filePicker" type="file" accept=".pdf,.png,.jpg,.jpeg,.gif">
     </label>
     <span id="status" style="font-size:13px; color:#4b5563;"></span>
   </div>
 
+  <div class="groupbar" id="groupbar"></div>
   <p class="summary" id="summary"></p>
   <div id="results"></div>
 

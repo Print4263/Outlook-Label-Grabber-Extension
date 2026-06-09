@@ -5,12 +5,19 @@
   // instead of at panel open. Image-only and idle sessions never pay for it.
   // (dev/test.html loads pdf.min.js itself, so window.pdfjsLib is already present there.)
   let pdfJsLoadPromise = null;
+  const scriptUrl = document.currentScript?.src || "";
+
+  function assetUrl(path) {
+    if (globalThis.chrome?.runtime?.getURL) return chrome.runtime.getURL(path);
+    return new URL(`../${path}`, scriptUrl || window.location.href).href;
+  }
+
   function ensurePdfJsScript() {
     if (window.pdfjsLib) return Promise.resolve();
     if (pdfJsLoadPromise) return pdfJsLoadPromise;
     pdfJsLoadPromise = new Promise((resolve, reject) => {
       const script = document.createElement("script");
-      script.src = chrome.runtime.getURL("lib/pdf.min.js");
+      script.src = assetUrl("lib/pdf.min.js");
       script.onload = () => resolve();
       script.onerror = () => {
         pdfJsLoadPromise = null;
@@ -24,7 +31,7 @@
   async function loadPdfJs() {
     await ensurePdfJsScript();
     if (!window.pdfjsLib) throw new Error("PDF reader could not start.");
-    window.pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("lib/pdf.worker.min.js");
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = assetUrl("lib/pdf.worker.min.js");
     return window.pdfjsLib;
   }
 

@@ -66,6 +66,9 @@
     const embeddedUspsHit = onlineReturnCenterDocument ? null : await embeddedUspsLabelDetection(pages);
     if (embeddedUspsHit) candidates.push(embeddedUspsHit);
 
+    const embeddedImageHits = await embeddedImageLabelDetections(pages);
+    candidates.push(...embeddedImageHits);
+
     candidates.push(...await dashedBorderLabelDetections(pages));
     candidates.push(...await solidBorderLabelDetections(pages));
 
@@ -350,6 +353,62 @@
       sourceHeight: best.canvas.height,
       qualityScore: 12
     };
+  }
+
+  async function embeddedImageLabelDetections(pages) {
+    const detections = [];
+
+    for (const page of pages) {
+      if (isOnlineReturnAuthorizationSlip(page?.text)) continue;
+
+      for (const canvas of page.embeddedImages || []) {
+        if (!canvas || canvas.width < 300 || canvas.height < 300) continue;
+        const aspect = canvas.width / Math.max(1, canvas.height);
+        if (aspect < 0.38 || aspect > 2.65) continue;
+
+        const barcodeRegions = findBarcodeRegions(canvas);
+        if (!looksLikeCompleteEmbeddedLabel(canvas, barcodeRegions)) continue;
+
+        let label = window.LabelExtractorCrop.canvasToLabel(canvas);
+        if (label.width > label.height) {
+          label = await window.LabelExtractorCrop.rotateDataUrl(label.dataUrl, 90);
+        }
+
+        detections.push({
+          confidence: 0.985,
+          reason: "embedded-image-label",
+          pageIndex: page.pageIndex,
+          pageCount: getPageCount(pages),
+          pages,
+          label,
+          cropRect: null,
+          sourceWidth: canvas.width,
+          sourceHeight: canvas.height,
+          sourceCanvas: canvas,
+          variantName: `Embedded image label page ${Number(page.pageIndex || 0) + 1}`,
+          qualityScore: 10 + barcodeRegions.length
+        });
+      }
+    }
+
+    return detections;
+  }
+
+  function looksLikeCompleteEmbeddedLabel(canvas, barcodeRegions) {
+    if (barcodeRegions.length >= 2) return true;
+    if (!barcodeRegions.length) return false;
+
+    const area = canvas.width * canvas.height;
+    const barcodeArea = barcodeRegions.reduce((sum, region) => sum + region.width * region.height, 0);
+    const barcodeAreaRatio = barcodeArea / Math.max(1, area);
+    if (barcodeAreaRatio > 0.035) return true;
+
+    const hasLargeHorizontalBarcode = barcodeRegions.some((region) => (
+      region.width > canvas.width * 0.38
+      && region.height > canvas.height * 0.06
+      && region.y > canvas.height * 0.45
+    ));
+    return hasLargeHorizontalBarcode && canvas.height > canvas.width * 1.15;
   }
 
   // UPS "View/Print Label" / fold-and-tear sheets: instructions on top, the real
