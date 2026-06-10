@@ -16,6 +16,7 @@
         <p id="statusText">Ready.</p>
       </div>
       <div class="topbar-actions">
+        <button id="reprintButton" type="button" hidden title="Print the last label again">Reprint last</button>
         <button id="popoutButton" type="button" title="Open in standalone window">Pop out</button>
         <button id="resetLayoutButton" type="button" title="Reset saved popout position">Reset layout</button>
       </div>
@@ -107,7 +108,7 @@
     <details class="drop-zone-disclosure">
       <summary>Choose file manually</summary>
       <section id="dropZone" class="drop-zone" tabindex="0">
-        <input id="fileInput" type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.heic,.heif,application/pdf,image/png,image/jpeg,image/gif,image/heic,image/heif" hidden>
+        <input id="fileInput" type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,application/pdf,image/png,image/jpeg,image/gif,image/webp,image/heic,image/heif" hidden>
         <button id="pickFile" type="button">Choose file</button>
       </section>
     </details>

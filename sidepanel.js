@@ -40,7 +40,8 @@ const state = {
   activeDownloadId: null,
   clearMode: "idle",
   uiMode: "staff",
-  lastExtractionSummary: null
+  lastExtractionSummary: null,
+  reprintHideTimer: null
 };
 
 const LOCAL_DETECTOR_REASONS = new Set([
@@ -91,10 +92,13 @@ const REVIEW_CLEAR_WARNING_DELAY_MS = 70000;
 const PENDING_CONTEXT_LABEL_KEY = "pendingContextLabel";
 const RECENT_DRAGGED_LABEL_KEY = "recentDraggedLabel";
 const RECENT_DRAGGED_LABEL_MAX_AGE_MS = 2 * 60 * 1000;
+const LAST_PRINTED_LABEL_KEY = "lastPrintedLabel";
+const REPRINT_MAX_AGE_MS = 10 * 60 * 1000;
 
 const els = {
   statusText: document.getElementById("statusText"),
   modeToggle: document.getElementById("modeToggle"),
+  reprintButton: document.getElementById("reprintButton"),
   popoutButton: document.getElementById("popoutButton"),
   resetLayoutButton: document.getElementById("resetLayoutButton"),
   dropZone: document.getElementById("dropZone"),
@@ -168,6 +172,7 @@ async function init() {
   setStatus("Ready.");
   loadRecentDownloads();
   startDownloadsPolling();
+  refreshReprintButton();
   processPendingContextLabel(saved[PENDING_CONTEXT_LABEL_KEY]);
   // Warm the ONNX model shortly after the panel opens so the first ambiguous
   // label doesn't pay the full single-threaded load cost mid-workflow.
@@ -176,6 +181,7 @@ async function init() {
 
 function bindEvents() {
   els.modeToggle?.addEventListener("click", toggleUiMode);
+  els.reprintButton?.addEventListener("click", reprintLastLabel);
   els.copyDebugReport?.addEventListener("click", copyDebugReport);
   els.copyFailureLog?.addEventListener("click", copyFailureLog);
   els.popoutButton?.addEventListener("click", openPopoutWindow);
@@ -476,7 +482,16 @@ const MEMORY_CLEANUP_EVERY = 4;
 
 async function backgroundMemoryCleanup() {
   if (chrome.storage?.session) {
-    chrome.storage.session.clear().catch(() => {});
+    // Preserve the reprint entry across the session wipe — it expires on its
+    // own schedule, and losing it here would defeat reprint right after the
+    // print that triggered this cleanup.
+    const lastPrinted = await getFreshLastPrintedLabel();
+    try {
+      await chrome.storage.session.clear();
+    } catch (_) {}
+    if (lastPrinted) {
+      chrome.storage.session.set({ [LAST_PRINTED_LABEL_KEY]: lastPrinted }).catch(() => {});
+    }
   }
 
   state.seenDownloadIds.clear();
@@ -580,7 +595,7 @@ function setFile(file) {
 
   if (!file) return;
   if (!isSupportedFile(file)) {
-    setStatus("Choose a PDF, PNG, JPG, or JPEG file.");
+    setStatus("Choose a PDF or image file (PNG, JPG, GIF, WEBP, HEIC).");
     return;
   }
   if (file.size > LabelExtractorConfig.MAX_UPLOAD_BYTES) {
@@ -752,7 +767,7 @@ async function recentDraggedLabelForUrl(url) {
 function isSupportedFile(file) {
   const name = file.name.toLowerCase();
   return LabelExtractorConfig.SUPPORTED_TYPES.includes(file.type)
-    || [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".heic", ".heif"].some((ext) => name.endsWith(ext));
+    || [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".heif"].some((ext) => name.endsWith(ext));
 }
 
 async function normalizeFileForExtraction(file) {
@@ -1130,6 +1145,7 @@ async function printLabelAtIndex(index, options = {}) {
   const scaledUrl = await resizeToLabelDpi(rawUrl, 203);
   const printUrl = await prepareForPrint(scaledUrl);
   printDataUrl(printUrl);
+  await saveLastPrintedLabel(printUrl);
   resetInactivityTimer("printed");
   if (!options.keepDownloadVisible) markActiveDownloadPrinted();
   els.clearButton.classList.add("needs-clear");
@@ -1292,6 +1308,64 @@ async function logDetectionFallback(label, fileName) {
     log.push(entry);
     await chrome.storage.local.set({ labelFailureLog: log.slice(-300) });
   } catch (_) {}
+}
+
+// --- Reprint last label ------------------------------------------------------
+// Keeps the final print-ready image of the most recent print for a short window
+// so a paper jam or wrong-tray misprint doesn't force redoing the whole
+// download-and-extract flow. Stored in storage.session: survives Clear and
+// panel reloads, expires after REPRINT_MAX_AGE_MS, and is wiped when the
+// browser closes (so it never lingers overnight on a register).
+async function saveLastPrintedLabel(printUrl) {
+  if (!chrome.storage?.session) return;
+  try {
+    await chrome.storage.session.set({
+      [LAST_PRINTED_LABEL_KEY]: {
+        printUrl,
+        name: state.file?.name || "label",
+        printedAt: Date.now()
+      }
+    });
+  } catch (_) {}
+  refreshReprintButton();
+}
+
+async function getFreshLastPrintedLabel() {
+  if (!chrome.storage?.session) return null;
+  try {
+    const data = await chrome.storage.session.get(LAST_PRINTED_LABEL_KEY);
+    const entry = data[LAST_PRINTED_LABEL_KEY];
+    if (!entry?.printUrl) return null;
+    if (Date.now() - Number(entry.printedAt || 0) > REPRINT_MAX_AGE_MS) return null;
+    return entry;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function refreshReprintButton() {
+  if (!els.reprintButton) return;
+  const entry = await getFreshLastPrintedLabel();
+  els.reprintButton.hidden = !entry;
+  clearTimeout(state.reprintHideTimer);
+  if (!entry) return;
+  const expiresAt = new Date(Number(entry.printedAt) + REPRINT_MAX_AGE_MS);
+  els.reprintButton.title =
+    `Print "${entry.name}" again (kept until ${expiresAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })})`;
+  // Hide the button on its own once the entry expires.
+  const remaining = Number(entry.printedAt) + REPRINT_MAX_AGE_MS - Date.now();
+  state.reprintHideTimer = setTimeout(refreshReprintButton, Math.max(1000, remaining + 250));
+}
+
+async function reprintLastLabel() {
+  const entry = await getFreshLastPrintedLabel();
+  if (!entry) {
+    if (els.reprintButton) els.reprintButton.hidden = true;
+    setStatus("No recent label to reprint - the last print has expired.");
+    return;
+  }
+  printDataUrl(entry.printUrl);
+  setStatus(`Reprinting "${entry.name}".`);
 }
 
 function markActiveDownloadPrinted() {
