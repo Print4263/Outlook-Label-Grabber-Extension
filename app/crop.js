@@ -120,15 +120,35 @@ function usesTallCropSource(label) {
 }
 
 async function autoOrientLabel(label) {
-  const img = await loadImage(labelToDataUrl(label));
-  if (img.naturalWidth <= img.naturalHeight) return [label, false];
-  return [await rotateLabel(label), true];
+  const oriented = await orientLabelToPortrait(label);
+  return [oriented, oriented !== label];
+}
+
+function drawRotated(img, quarterTurns) {
+  const turns = ((quarterTurns % 4) + 4) % 4;
+  const sideways = turns % 2 === 1;
+  const canvas = document.createElement("canvas");
+  canvas.width = sideways ? img.height : img.width;
+  canvas.height = sideways ? img.width : img.height;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate((Math.PI / 2) * turns);
+  ctx.drawImage(img, -img.width / 2, -img.height / 2);
+  return canvas;
 }
 
 // 4x6 shipping labels are portrait; the print path forces portrait dimensions, so
 // a landscape result (common when a label image was placed sideways/rotated in the
 // source PDF) would print squished. Rotate any landscape candidate upright while
-// preserving its variant name and metadata. No-op for portrait/square labels.
+// preserving its variant name and metadata. The rotation direction is decided by
+// content, not fixed: a source rotated the "other way" used to land upside down
+// after the blind clockwise turn. detectUprightFlip() finds the 1D barcode bands
+// and flags a label whose barcodes sit at the top, so both landscape directions
+// and upside-down portrait sources all come out reading sender top-left, barcode
+// at the bottom. No-op when the label is already portrait and looks upright.
 async function orientLabelToPortrait(label) {
   if (!label?.base64) return label;
   let img;
@@ -139,18 +159,19 @@ async function orientLabelToPortrait(label) {
   }
   const w = img.naturalWidth || img.width;
   const h = img.naturalHeight || img.height;
-  if (!w || !h || w <= h) return label;
+  if (!w || !h) return label;
 
-  const canvas = document.createElement("canvas");
-  canvas.width = h;
-  canvas.height = w;
-  const ctx = canvas.getContext("2d");
-  ctx.imageSmoothingEnabled = false;
-  ctx.fillStyle = "#fff";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.translate(canvas.width / 2, canvas.height / 2);
-  ctx.rotate(Math.PI / 2);
-  ctx.drawImage(img, -img.width / 2, -img.height / 2);
+  const detectFlip = window.LabelExtractorCrop?.detectUprightFlip;
+  let canvas;
+  if (w > h) {
+    canvas = drawRotated(img, 1);
+    if (detectFlip && detectFlip(canvas)) canvas = drawRotated(img, 3);
+  } else {
+    if (!detectFlip) return label;
+    const probe = drawRotated(img, 0);
+    if (!detectFlip(probe)) return label;
+    canvas = drawRotated(img, 2);
+  }
 
   const dataUrl = canvas.toDataURL("image/png");
   return {

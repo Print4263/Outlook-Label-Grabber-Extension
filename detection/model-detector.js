@@ -88,6 +88,7 @@
       sourceKind: best.page.sourceKind || best.page.type || "",
       sourceWidth: best.page.width || best.page.canvas.width,
       sourceHeight: best.page.height || best.page.canvas.height,
+      cropRect: best.prediction.rect,
       label: await window.LabelExtractorCrop.cropCanvas(best.page.canvas, best.prediction.rect)
     };
   }
