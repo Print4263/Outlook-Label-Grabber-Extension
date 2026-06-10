@@ -105,7 +105,7 @@ async function clearOldLabelDownloads(options = {}) {
 
 function isSupportedDownload(download) {
   if (!download?.filename || download.exists === false) return false;
-  return /\.(pdf|png|jpe?g|gif|hei[cf])$/i.test(download.filename);
+  return /\.(pdf|png|jpe?g|gif|webp|hei[cf])$/i.test(download.filename);
 }
 
 function isAfterDownloadsClearedAt(download) {
@@ -350,7 +350,7 @@ async function loadContextLabelUrl(url, suggestedName) {
     const file = new File([blob], name, { type });
 
     if (!isSupportedFile(file)) {
-      throw new Error("That link did not return a PDF, PNG, JPG, JPEG, or GIF label.");
+      throw new Error("That link did not return a PDF, PNG, JPG, JPEG, GIF, or WEBP label.");
     }
 
     setFile(file);
@@ -378,7 +378,7 @@ async function loadContextLabelDataUrl(dataUrl, suggestedName, suggestedType) {
     const file = new File([blob], name, { type });
 
     if (!isSupportedFile(file)) {
-      throw new Error("That page item did not provide a PDF, PNG, JPG, JPEG, or GIF label.");
+      throw new Error("That page item did not provide a PDF, PNG, JPG, JPEG, GIF, or WEBP label.");
     }
 
     setFile(file);
@@ -397,12 +397,13 @@ function cleanMimeType(value) {
 function filenameForContextLabel(value, type) {
   const raw = basename(value).split(/[?#]/)[0] || "sent-label";
   const clean = raw.replace(/[<>:"|?*\x00-\x1f]/g, "-") || "sent-label";
-  if (/\.(pdf|png|jpe?g|gif|hei[cf])$/i.test(clean)) return clean;
+  if (/\.(pdf|png|jpe?g|gif|webp|hei[cf])$/i.test(clean)) return clean;
 
   if (type === "application/pdf") return `${clean}.pdf`;
   if (type === "image/png") return `${clean}.png`;
   if (type === "image/jpeg") return `${clean}.jpg`;
   if (type === "image/gif") return `${clean}.gif`;
+  if (type === "image/webp") return `${clean}.webp`;
   if (type === "image/heic") return `${clean}.heic`;
   if (type === "image/heif") return `${clean}.heif`;
   return clean;
@@ -474,6 +475,7 @@ function mimeTypeFromName(name) {
   if (lower.endsWith(".png")) return "image/png";
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
   if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".webp")) return "image/webp";
   if (lower.endsWith(".heic")) return "image/heic";
   if (lower.endsWith(".heif")) return "image/heif";
   return "application/octet-stream";

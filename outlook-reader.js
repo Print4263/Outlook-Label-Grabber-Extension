@@ -9,7 +9,7 @@ if (window.__labelExtractorOutlookReaderLoaded) {
   let retryCount = 0;
   const MAX_RETRIES = 12;
   const RETRY_INTERVAL_MS = 1500;
-  const LABEL_FILE_PATTERN = /\.(pdf|png|jpe?g|gif|hei[cf])\b/i;
+  const LABEL_FILE_PATTERN = /\.(pdf|png|jpe?g|gif|webp|hei[cf])\b/i;
   const ATTACHMENT_HINT_PATTERN = /(label|return|ship|shipping|ups|usps|fedex|dhl|tracking|postage|rma|narvar|amazon|ebay|etsy)/i;
   const DOWNLOAD_HINT_PATTERN = /(download|save as|save a copy|save to computer)/i;
   const MORE_ACTIONS_PATTERN = /(more|actions|options|menu|show more)/i;
@@ -287,7 +287,7 @@ if (window.__labelExtractorOutlookReaderLoaded) {
       element.getAttribute?.("download")
     ].filter(Boolean).join(" ");
     if (!text || text.length > 500 || !LABEL_FILE_PATTERN.test(text)) return "";
-    const match = text.match(/[^\s"'<>:]+?\.(?:pdf|png|jpe?g|gif|hei[cf])\b/i);
+    const match = text.match(/[^\s"'<>:]+?\.(?:pdf|png|jpe?g|gif|webp|hei[cf])\b/i);
     return match ? match[0] : "";
   }
 

@@ -5,6 +5,7 @@ const LabelExtractorConfig = {
     "image/png",
     "image/jpeg",
     "image/gif",
+    "image/webp",
     "image/heic",
     "image/heif"
   ]

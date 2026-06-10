@@ -52,6 +52,7 @@
       if (/\.png$/i.test(path)) return "image/png";
       if (/\.jpe?g$/i.test(path)) return "image/jpeg";
       if (/\.gif$/i.test(path)) return "image/gif";
+      if (/\.webp$/i.test(path)) return "image/webp";
       return "";
     },
     corpusPath(file) { return (file.webkitRelativePath || file.name || "").replace(/\\/g, "/"); },
@@ -477,7 +478,7 @@
   // --- Corpus loading --------------------------------------------------------
   function loadCorpus() {
     const files = Array.from(Studio.els.corpusPicker.files || [])
-      .filter((file) => /\.(pdf|png|jpe?g|gif|hei[cf])$/i.test(file.name))
+      .filter((file) => /\.(pdf|png|jpe?g|gif|webp|hei[cf])$/i.test(file.name))
       .filter((file) => !util.corpusPath(file).toLowerCase().includes("/codex build/"));
 
     state.corpusGroups = new Map();

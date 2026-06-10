@@ -124,7 +124,7 @@ async function runLocalDetector(file) {
     return processed;
   }
 
-  if (file.type.startsWith("image/") || /\.(png|jpe?g|hei[cf])$/i.test(file.name)) {
+  if (file.type.startsWith("image/") || /\.(png|jpe?g|webp|hei[cf])$/i.test(file.name)) {
     const page = await window.LabelExtractorPNG.process({
       blob: file,
       type: file.type,
