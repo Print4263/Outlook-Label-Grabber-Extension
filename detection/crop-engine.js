@@ -155,7 +155,10 @@
 
   async function cropCanvas(sourceCanvas, rect, options = {}) {
     const resolved = resolveCropOptions(options);
-    const normalized = normalizeRect(expandRect(rect, sourceCanvas, CROP_SAFETY_PADDING_RATIO, resolved), sourceCanvas);
+    let normalized = normalizeRect(expandRect(rect, sourceCanvas, CROP_SAFETY_PADDING_RATIO, resolved), sourceCanvas);
+    if (resolved.gapClamp !== false) {
+      normalized = clampPaddingAtGaps(sourceCanvas, normalizeRect(rect, sourceCanvas), normalized);
+    }
     const { x, y, width, height } = normalized;
 
     const canvas = document.createElement("canvas");
@@ -167,6 +170,80 @@
     ctx.fillRect(0, 0, width, height);
     ctx.drawImage(sourceCanvas, x, y, width, height, 0, 0, width, height);
     return canvasToLabel(canvas);
+  }
+
+  // The safety padding in expandRect() is content-blind: it grows the detected
+  // rect by a fixed ratio, so unrelated print within the padding band (browser
+  // page furniture, instruction text near the label) gets annexed into the
+  // crop. Real label overflow — address text hugging the detected border —
+  // touches the detected edge with no white gap before it, while unrelated
+  // content sits beyond one. So walk each side outward from the detected edge:
+  // pass through blank lines and edge-contiguous content freely, but stop just
+  // short of content that lies beyond a sustained white gap. Pass
+  // `gapClamp: false` in the crop options to skip this.
+  const GAP_CLAMP_MIN_PIXELS = 6;
+  const GAP_CLAMP_MIN_RATIO = 0.004; // of the canvas' smaller dimension
+
+  function clampPaddingAtGaps(sourceCanvas, inner, outer) {
+    if (outer.width <= 0 || outer.height <= 0) return outer;
+    const ctx = sourceCanvas.getContext("2d", { willReadFrequently: true });
+    const data = ctx.getImageData(outer.x, outer.y, outer.width, outer.height).data;
+    const whiteThreshold = 246;
+    const gapMin = Math.max(
+      GAP_CLAMP_MIN_PIXELS,
+      Math.round(Math.min(sourceCanvas.width, sourceCanvas.height) * GAP_CLAMP_MIN_RATIO)
+    );
+
+    const rowHasContent = (y) => {
+      const base = (y - outer.y) * outer.width;
+      const minCount = Math.max(2, Math.floor(outer.width * 0.002));
+      let count = 0;
+      for (let x = 0; x < outer.width; x += 1) {
+        const i = (base + x) * 4;
+        if (data[i + 3] < 16) continue;
+        if (data[i] >= whiteThreshold && data[i + 1] >= whiteThreshold && data[i + 2] >= whiteThreshold) continue;
+        count += 1;
+        if (count >= minCount) return true;
+      }
+      return false;
+    };
+
+    const colHasContent = (x) => {
+      const col = x - outer.x;
+      const minCount = Math.max(2, Math.floor(outer.height * 0.002));
+      let count = 0;
+      for (let y = 0; y < outer.height; y += 1) {
+        const i = (y * outer.width + col) * 4;
+        if (data[i + 3] < 16) continue;
+        if (data[i] >= whiteThreshold && data[i + 1] >= whiteThreshold && data[i + 2] >= whiteThreshold) continue;
+        count += 1;
+        if (count >= minCount) return true;
+      }
+      return false;
+    };
+
+    // Walk from just outside the detected edge toward the padded edge. On
+    // hitting a content line that follows a gap of at least gapMin blank
+    // lines, clamp the padding on the gap side of that content.
+    const clampSide = (start, limit, direction, hasContent) => {
+      let blanks = 0;
+      for (let pos = start; direction > 0 ? pos <= limit : pos >= limit; pos += direction) {
+        if (hasContent(pos)) {
+          if (blanks >= gapMin) return pos - direction;
+          blanks = 0;
+        } else {
+          blanks += 1;
+        }
+      }
+      return limit;
+    };
+
+    const top = clampSide(inner.y - 1, outer.y, -1, rowHasContent);
+    const bottom = clampSide(inner.y + inner.height, outer.y + outer.height - 1, 1, rowHasContent);
+    const left = clampSide(inner.x - 1, outer.x, -1, colHasContent);
+    const right = clampSide(inner.x + inner.width, outer.x + outer.width - 1, 1, colHasContent);
+
+    return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
   }
 
   function normalizeRect(rect, canvas) {
@@ -200,6 +277,87 @@
       width: rect.width + growLeft + growRight,
       height: rect.height + growTop + growBottom
     };
+  }
+
+  // ── Upright orientation ─────────────────────────────────────────────────
+  // A 4x6 shipping label reads sender top-left with the main 1D tracking
+  // barcode in the lower half. Auto-rotation to portrait can land upside down
+  // (the source was rotated the other way), so detect it from pixels: 1D
+  // barcode bands are long runs of near-identical rows, each with many
+  // dark/light transitions (vertical bars). Text rows also have many
+  // transitions but change row to row, so the similarity test filters them
+  // out. Labels carry several barcodes (routing, tracking) on both halves, so
+  // the whole-image centroid is ambiguous — but the HEAVIEST single band is
+  // the tracking barcode, and its position discriminates cleanly (measured
+  // 0.58 upright vs 0.42 flipped on UPS, stronger on USPS). Flip only when
+  // that band sits clearly in the top half; never flip on a guess.
+  const FLIP_MIN_TRANSITIONS = 24;     // fewer transitions = not a barcode row
+  const FLIP_ROW_DIFF_RATIO = 0.04;    // sampled-bit mismatch allowed between barcode rows
+  const FLIP_BAND_GAP_ROWS = 6;        // sampled blank rows that end a band
+  const FLIP_CENTROID_MAX = 0.45;      // heaviest band above this (from top) = leave alone
+  const FLIP_MIN_MASS = 600;           // band transition mass needed to trust the call
+
+  function detectUprightFlip(canvas) {
+    const { width, height } = canvas;
+    if (!width || !height) return false;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const data = ctx.getImageData(0, 0, width, height).data;
+    const rowStep = 2;
+    const colStep = 2;
+    const cols = Math.max(1, Math.floor(width / colStep));
+
+    const rowBits = [];
+    for (let y = 0; y < height; y += rowStep) {
+      const bits = new Uint8Array(cols);
+      for (let c = 0; c < cols; c += 1) {
+        const i = (y * width + c * colStep) * 4;
+        if (data[i + 3] < 16) continue;
+        const lum = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+        if (lum < 128) bits[c] = 1;
+      }
+      rowBits.push(bits);
+    }
+
+    const transitions = rowBits.map((bits) => {
+      let t = 0;
+      for (let c = 1; c < bits.length; c += 1) {
+        if (bits[c] !== bits[c - 1]) t += 1;
+      }
+      return t;
+    });
+
+    // A row belongs to a barcode band when it is transition-dense AND nearly
+    // identical to the row ~4px below it (vertical bars repeat; text doesn't).
+    const lookahead = Math.max(1, Math.round(4 / rowStep));
+    const total = rowBits.length;
+    let heaviest = null;
+    let band = null;
+    for (let r = 0; r < total; r += 1) {
+      let isBarcodeRow = false;
+      if (r + lookahead < total && transitions[r] >= FLIP_MIN_TRANSITIONS) {
+        const a = rowBits[r];
+        const b = rowBits[r + lookahead];
+        let diff = 0;
+        for (let c = 0; c < a.length; c += 1) {
+          if (a[c] !== b[c]) diff += 1;
+        }
+        isBarcodeRow = diff <= a.length * FLIP_ROW_DIFF_RATIO;
+      }
+      if (isBarcodeRow) {
+        if (!band) band = { start: r, end: r, mass: 0, moment: 0 };
+        band.end = r;
+        band.mass += transitions[r];
+        band.moment += transitions[r] * r;
+      } else if (band && r - band.end > FLIP_BAND_GAP_ROWS) {
+        if (!heaviest || band.mass > heaviest.mass) heaviest = band;
+        band = null;
+      }
+    }
+    if (band && (!heaviest || band.mass > heaviest.mass)) heaviest = band;
+
+    if (!heaviest || heaviest.mass < FLIP_MIN_MASS) return false;
+    const centroidRatio = heaviest.moment / heaviest.mass / total;
+    return centroidRatio < FLIP_CENTROID_MAX;
   }
 
   // ── Faint rule removal ──────────────────────────────────────────────────
@@ -332,6 +490,7 @@
     rotateDataUrl,
     canvasToLabel,
     imageDataToCanvas,
-    eraseFaintRules
+    eraseFaintRules,
+    detectUprightFlip
   };
 })();

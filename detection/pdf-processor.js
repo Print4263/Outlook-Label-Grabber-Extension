@@ -125,32 +125,75 @@
       return foldItems.some((fold) => near(here, fold, reach));
     }));
 
-    return markers.map((item) => {
-      const t = item.transform;
-      const baselineLen = Math.hypot(t[0], t[1]) || 1;
-      const ux = t[0] / baselineLen;
-      const uy = t[1] / baselineLen;
-      const vx = -uy;
-      const vy = ux;
-      const w = Number(item.width || 0) || baselineLen;
-      const h = Number(item.height || 0) || baselineLen;
-      // Corners in PDF space (y up), with a descender allowance below the baseline.
-      const corners = [
-        [t[4] - vx * h * 0.35, t[5] - vy * h * 0.35],
-        [t[4] + ux * w - vx * h * 0.35, t[5] + uy * w - vy * h * 0.35],
-        [t[4] + vx * h, t[5] + vy * h],
-        [t[4] + ux * w + vx * h, t[5] + uy * w + vy * h]
-      ];
-      const xs = corners.map((c) => c[0]);
-      const ys = corners.map((c) => pageHeight - c[1]); // flip to viewport coords
-      const pad = Math.max(2, h * 0.3);
-      return {
-        x: Math.min(...xs) - pad,
-        y: Math.min(...ys) - pad,
-        width: Math.max(...xs) - Math.min(...xs) + pad * 2,
-        height: Math.max(...ys) - Math.min(...ys) + pad * 2
-      };
-    });
+    return markers.map((item) => textItemRect(item, pageHeight));
+  }
+
+  // Bounding rect (scale-1 viewport coords, y from top) of a text item, built
+  // from its baseline transform so rotated/vertical text is covered too.
+  function textItemRect(item, pageHeight) {
+    const t = item.transform;
+    const baselineLen = Math.hypot(t[0], t[1]) || 1;
+    const ux = t[0] / baselineLen;
+    const uy = t[1] / baselineLen;
+    const vx = -uy;
+    const vy = ux;
+    const w = Number(item.width || 0) || baselineLen;
+    const h = Number(item.height || 0) || baselineLen;
+    // Corners in PDF space (y up), with a descender allowance below the baseline.
+    const corners = [
+      [t[4] - vx * h * 0.35, t[5] - vy * h * 0.35],
+      [t[4] + ux * w - vx * h * 0.35, t[5] + uy * w - vy * h * 0.35],
+      [t[4] + vx * h, t[5] + vy * h],
+      [t[4] + ux * w + vx * h, t[5] + uy * w + vy * h]
+    ];
+    const xs = corners.map((c) => c[0]);
+    const ys = corners.map((c) => pageHeight - c[1]); // flip to viewport coords
+    const pad = Math.max(2, h * 0.3);
+    return {
+      x: Math.min(...xs) - pad,
+      y: Math.min(...ys) - pad,
+      width: Math.max(...xs) - Math.min(...xs) + pad * 2,
+      height: Math.max(...ys) - Math.min(...ys) + pad * 2
+    };
+  }
+
+  // Browser "print to PDF" headers and footers — the date-time stamp, document
+  // title ("View/Print Label"), about:blank / URL, and "page/pages" counter —
+  // land in the top/bottom margin band of the sheet, often within a centimeter
+  // of the label. Pixel scans read them as content, so the automatic crop's
+  // safety padding annexes them and the user has to crop them out by hand.
+  // Whole-item pattern matches only, restricted to the edge bands of full
+  // letter/A4-size sheets: label content can legitimately contain dates or
+  // "n/m" fragments, but full-bleed 4x6 label PDFs fail the page-size guard,
+  // and on big sheets the label never reaches the margin band.
+  const FURNITURE_BAND_RATIO = 0.06;
+  const FURNITURE_PATTERNS = [
+    /^\d{1,2}\/\d{1,2}\/\d{2,4},?(\s+\d{1,2}:\d{2}(\s*[ap]\.?m\.?)?)?$/i, // date or "6/9/26, 4:31 PM"
+    /^\d{1,2}:\d{2}\s*[ap]\.?m\.?$/i,                                    // detached time fragment
+    /^view\/print label$/i,
+    /^about:blank$/i,
+    /^(https?:\/\/\S*|www\.\S+)$/i,
+    /^\d+\/\d+$/,                                                        // page counter "2/2"
+    /^page \d+( of \d+)?$/i
+  ];
+
+  function findPrintFurnitureRects(items, page) {
+    const viewport = page.getViewport({ scale: 1 });
+    const pageWidth = viewport.width;
+    const pageHeight = viewport.height;
+    if (Math.min(pageWidth, pageHeight) < 500 || Math.max(pageWidth, pageHeight) < 750) return [];
+    const band = pageHeight * FURNITURE_BAND_RATIO;
+    const rects = [];
+    for (const item of items || []) {
+      if (!item.transform) continue;
+      const str = String(item.str || "").trim();
+      if (!str) continue;
+      const baselineY = item.transform[5]; // PDF space: measured from page bottom
+      if (baselineY > band && baselineY < pageHeight - band) continue;
+      if (!FURNITURE_PATTERNS.some((re) => re.test(str))) continue;
+      rects.push(textItemRect(item, pageHeight));
+    }
+    return rects;
   }
 
   async function process(captured) {
@@ -167,11 +210,13 @@
           let text = "";
           let foldRatio = null;
           let foldMarkerRects = [];
+          let furnitureRects = [];
           try {
             const textContent = await page.getTextContent();
             text = textContent.items.map((item) => item.str).join(" ");
             foldRatio = findFoldRatio(textContent.items, page, text);
             foldMarkerRects = findFoldMarkerRects(textContent.items, page);
+            furnitureRects = findPrintFurnitureRects(textContent.items, page);
           } catch (_) {}
           const embeddedImageInfo = await extractEmbeddedImages(page, pdfjsLib);
           const embeddedImages = embeddedImageInfo.images;
@@ -183,6 +228,7 @@
             text,
             foldRatio,
             foldMarkerRects,
+            furnitureRects,
             embeddedImages,
             embeddedImageCount,
             priority: scoreLabelPage(text) + Math.min(embeddedImageCount, 3) * 0.75
@@ -242,10 +288,12 @@
     const page = await pdf.getPage(idx + 1);
     let text = "";
     let foldMarkerRects = [];
+    let furnitureRects = [];
     try {
       const textContent = await page.getTextContent();
       text = textContent.items.map((item) => item.str).join(" ");
       foldMarkerRects = findFoldMarkerRects(textContent.items, page);
+      furnitureRects = findPrintFurnitureRects(textContent.items, page);
     } catch (_) {}
     return renderPageEntry({
       pageIndex: idx,
@@ -254,12 +302,13 @@
       embeddedImages: [],
       embeddedImageCount: 0,
       foldRatio: null,
-      foldMarkerRects
+      foldMarkerRects,
+      furnitureRects
     }, pdf.numPages);
   }
 
   async function renderPageEntry(entry, pageCount) {
-    const { pageIndex, page, text, embeddedImages, embeddedImageCount, foldRatio, foldMarkerRects } = entry;
+    const { pageIndex, page, text, embeddedImages, embeddedImageCount, foldRatio, foldMarkerRects, furnitureRects } = entry;
     const naturalViewport = page.getViewport({ scale: 1 });
     const renderScale = Math.min(4, Math.max(3, 1200 / naturalViewport.width));
     const viewport = page.getViewport({ scale: renderScale });
@@ -274,17 +323,20 @@
       viewport
     }).promise;
 
-    // Erase "FOLD HERE" marker text and the long faint-grey fold/separator rules
-    // (UPS "View/Print Label" sheets) before anything reads pixels — both otherwise
+    // Erase "FOLD HERE" marker text, browser print furniture (date stamp, title,
+    // URL, page counter), and the long faint-grey fold/separator rules (UPS
+    // "View/Print Label" sheets) before anything reads pixels — all otherwise
     // count as content and stop auto-crop/whitespace-trim at the page margin
     // instead of the label's true edge. The fold detection itself is unaffected:
     // foldRatio comes from the text items, not from pixels. Must run before the
     // pixel caches (pixelsFor here, getCanvasData in the detector) take their
     // snapshot of this canvas.
-    if (Array.isArray(foldMarkerRects) && foldMarkerRects.length) {
+    const eraseTextRects = (Array.isArray(foldMarkerRects) ? foldMarkerRects : [])
+      .concat(Array.isArray(furnitureRects) ? furnitureRects : []);
+    if (eraseTextRects.length) {
       const eraseCtx = canvas.getContext("2d", { willReadFrequently: true });
       eraseCtx.fillStyle = "#fff";
-      for (const rect of foldMarkerRects) {
+      for (const rect of eraseTextRects) {
         eraseCtx.fillRect(
           Math.floor(rect.x * renderScale),
           Math.floor(rect.y * renderScale),
