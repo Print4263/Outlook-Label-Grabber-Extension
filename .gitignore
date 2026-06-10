@@ -11,6 +11,8 @@ Thumbs.db
 # Customer label corpora (PII) — never commit
 Labels/
 dev/samples/
+dev/diag-labels/
+dev/diag-manifest.json
 
 # Training Studio exports (may contain label notes/geometry)
 fix-report-*.json

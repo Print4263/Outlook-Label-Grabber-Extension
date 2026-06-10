@@ -155,9 +155,13 @@
 
   async function cropCanvas(sourceCanvas, rect, options = {}) {
     const resolved = resolveCropOptions(options);
+    const inner = normalizeRect(rect, sourceCanvas);
     let normalized = normalizeRect(expandRect(rect, sourceCanvas, CROP_SAFETY_PADDING_RATIO, resolved), sourceCanvas);
+    if (resolved.contentExtend !== false) {
+      normalized = unionFarther(normalized, extendThroughContent(sourceCanvas, inner, resolved), sourceCanvas);
+    }
     if (resolved.gapClamp !== false) {
-      normalized = clampPaddingAtGaps(sourceCanvas, normalizeRect(rect, sourceCanvas), normalized);
+      normalized = clampPaddingAtGaps(sourceCanvas, inner, normalized);
     }
     const { x, y, width, height } = normalized;
 
@@ -244,6 +248,115 @@
     const right = clampSide(inner.x + inner.width, outer.x + outer.width - 1, 1, colHasContent);
 
     return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
+  }
+
+  // Diagnostic: return the rect at each stage cropCanvas() would produce, without
+  // drawing. inner = the detector's raw box; expanded = after content-blind safety
+  // padding (what gapClamp:false yields); clamped = after the gap-aware clamp (the
+  // production crop). The per-edge difference between expanded and clamped is exactly
+  // what clampPaddingAtGaps removed on each side. Used by the training studio.
+  function measureCropRect(sourceCanvas, rect, options = {}) {
+    const resolved = resolveCropOptions(options);
+    const inner = normalizeRect(rect, sourceCanvas);
+    const expanded = normalizeRect(expandRect(rect, sourceCanvas, CROP_SAFETY_PADDING_RATIO, resolved), sourceCanvas);
+    let outer = expanded;
+    if (resolved.contentExtend !== false) {
+      outer = unionFarther(outer, extendThroughContent(sourceCanvas, inner, resolved), sourceCanvas);
+    }
+    const extended = outer;
+    const clamped = resolved.gapClamp !== false
+      ? clampPaddingAtGaps(sourceCanvas, inner, outer)
+      : outer;
+    return { inner, expanded, extended, clamped };
+  }
+
+  // Outward content rescue. A detected border can sit INSIDE label content: an
+  // address that overruns the cut line, a barcode end poking past the frame. The
+  // fixed safety padding is a constant ratio, so when content reaches farther out
+  // than the padding it gets clipped (e.g. a ship-to "Indianapolis" sheared to
+  // "lianapolis"). From each inner edge, walk outward and advance the edge through
+  // content, bridging the small gaps between letters/words/lines, and stop at the
+  // first SUSTAINED white gap — the real margin. White immediately outside the edge
+  // (a clean border with its own margin) yields no extension, so labels that sit
+  // alone on the page are untouched. maxReach caps how far a single edge can grow so
+  // a neighbouring label on a multi-label sheet is never annexed.
+  const CONTENT_EXTEND_MAX_REACH_RATIO = 0.30; // of the inner rect's own dimension
+  const CONTENT_EXTEND_GAP_RATIO = 0.012;      // sustained white = real margin
+  const CONTENT_EXTEND_MIN_GAP = 14;
+
+  function extendThroughContent(sourceCanvas, inner, options = {}) {
+    const W = sourceCanvas.width, H = sourceCanvas.height;
+    if (inner.width <= 0 || inner.height <= 0) return inner;
+    const ctx = sourceCanvas.getContext("2d", { willReadFrequently: true });
+    const whiteThreshold = 246;
+    const gap = Math.max(
+      CONTENT_EXTEND_MIN_GAP,
+      Math.round(Math.min(W, H) * (Number.isFinite(options.contentExtendGapRatio) ? options.contentExtendGapRatio : CONTENT_EXTEND_GAP_RATIO))
+    );
+    const reachRatio = Number.isFinite(options.contentExtendReachRatio) ? options.contentExtendReachRatio : CONTENT_EXTEND_MAX_REACH_RATIO;
+    const reachX = Math.round(inner.width * reachRatio);
+    const reachY = Math.round(inner.height * reachRatio);
+
+    const x0 = clamp(Math.floor(inner.x), 0, W);
+    const x1 = clamp(Math.ceil(inner.x + inner.width), 0, W);
+    const y0 = clamp(Math.floor(inner.y), 0, H);
+    const y1 = clamp(Math.ceil(inner.y + inner.height), 0, H);
+
+    // A row/column counts as content when it carries more than a trace of dark
+    // pixels across the inner span (matches the threshold used elsewhere).
+    const rowHasContent = (y) => {
+      if (y < 0 || y >= H || x1 <= x0) return false;
+      const d = ctx.getImageData(x0, y, x1 - x0, 1).data;
+      const need = Math.max(2, Math.floor((x1 - x0) * 0.004));
+      let c = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] < 16) continue;
+        if (d[i] >= whiteThreshold && d[i + 1] >= whiteThreshold && d[i + 2] >= whiteThreshold) continue;
+        if (++c >= need) return true;
+      }
+      return false;
+    };
+    const colHasContent = (x) => {
+      if (x < 0 || x >= W || y1 <= y0) return false;
+      const d = ctx.getImageData(x, y0, 1, y1 - y0).data;
+      const need = Math.max(2, Math.floor((y1 - y0) * 0.004));
+      let c = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] < 16) continue;
+        if (d[i] >= whiteThreshold && d[i + 1] >= whiteThreshold && d[i + 2] >= whiteThreshold) continue;
+        if (++c >= need) return true;
+      }
+      return false;
+    };
+
+    // Walk outward from `start` (first line outside the edge) by `dir` up to `limit`.
+    // Advance the edge to the farthest content line seen; bail after `gap` blanks.
+    const walk = (start, limit, dir, hasContent, fallback) => {
+      let edge = fallback;
+      let blanks = 0;
+      for (let pos = start; dir > 0 ? pos <= limit : pos >= limit; pos += dir) {
+        if (hasContent(pos)) { edge = pos; blanks = 0; }
+        else if (++blanks >= gap) break;
+      }
+      return edge;
+    };
+
+    const left = walk(x0 - 1, Math.max(0, x0 - reachX), -1, colHasContent, x0);
+    const right = walk(x1, Math.min(W - 1, x1 - 1 + reachX), 1, colHasContent, x1 - 1) + 1;
+    const top = walk(y0 - 1, Math.max(0, y0 - reachY), -1, rowHasContent, y0);
+    const bottom = walk(y1, Math.min(H - 1, y1 - 1 + reachY), 1, rowHasContent, y1 - 1) + 1;
+
+    return { x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
+  }
+
+  // Per-edge union: take whichever rect reaches farther from centre on each side,
+  // clamped to the canvas. Used to merge fixed safety padding with content rescue.
+  function unionFarther(a, b, canvas) {
+    const left = Math.min(a.x, b.x);
+    const top = Math.min(a.y, b.y);
+    const right = Math.max(a.x + a.width, b.x + b.width);
+    const bottom = Math.max(a.y + a.height, b.y + b.height);
+    return normalizeRect({ x: left, y: top, width: right - left, height: bottom - top }, canvas);
   }
 
   function normalizeRect(rect, canvas) {
@@ -487,6 +600,7 @@
   window.LabelExtractorCrop = {
     autoCropCanvas,
     cropCanvas,
+    measureCropRect,
     rotateDataUrl,
     canvasToLabel,
     imageDataToCanvas,
