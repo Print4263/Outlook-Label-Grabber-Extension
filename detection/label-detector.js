@@ -177,7 +177,45 @@
     const ranked = dedupeDetections(candidates)
       .filter((candidate) => !isLikelyTextInstructionPage(findPage(candidate.pages || pages, candidate.pageIndex), candidate.reason))
       .sort(compareDetections);
-    return promoteModelOverBorder(promoteDetectionOverTextGuess(ranked));
+    return demoteOrderDetailsPages(promoteModelOverBorder(promoteDetectionOverTextGuess(ranked)), pages);
+  }
+
+  // Multi-page label PDFs ride along with order-details pages — packing slips,
+  // item lists with quantities and SKUs, return-ID summaries — that the store
+  // never prints. Only the weak text-fallback detectors fire on them (strong
+  // geometry detectors have nothing to find there), and those cards then sit
+  // above better candidates in the picker. They can't be dropped outright:
+  // label pages MENTION the packing slip in their instructions, and some
+  // sheets print order text on the same page as the label, so the patterns
+  // below anchor on distinctive order-page strings and only candidates from
+  // weak detectors are moved — to the END of the list, never removed. A strong
+  // detection on a page that happens to carry order text is untouched.
+  const ORDER_DETAILS_PAGE_PATTERN = new RegExp([
+    "PACKING SLIP PUT THIS IN THE BOX",
+    "PACKING LIST",
+    "QTY\\s+SKU",
+    "ITEM DESCRIPTIONS\\s+QUANTITY",
+    "AMAZON RETURN ID:",
+    "RETURN ORDER NUMBER:",
+    "ORDER SUMMARY"
+  ].join("|"));
+  const ORDER_DETAILS_DEMOTE_REASONS = ["keywords", "embedded-label-page", "text-label-page"];
+
+  function isOrderDetailsText(text) {
+    return ORDER_DETAILS_PAGE_PATTERN.test(String(text || "").toUpperCase());
+  }
+
+  function demoteOrderDetailsPages(ranked, pages) {
+    if (ranked.length < 2) return ranked;
+    const shouldDemote = (candidate) => ORDER_DETAILS_DEMOTE_REASONS.includes(candidate?.reason)
+      && isOrderDetailsText(findPage(candidate.pages || pages, candidate.pageIndex)?.text);
+    const demoted = ranked.filter(shouldDemote);
+    if (!demoted.length || demoted.length === ranked.length) return ranked;
+    trace("order-details-demoted", {
+      demoted: demoted.map((candidate) => `${candidate.reason}@${candidate.pageIndex}`),
+      note: "weak text-fallback candidates on order-details/packing-slip pages moved to the end"
+    });
+    return ranked.filter((candidate) => !shouldDemote(candidate)).concat(demoted);
   }
 
   // Text-keyword fallbacks score high on pages FULL of carrier wording — which
