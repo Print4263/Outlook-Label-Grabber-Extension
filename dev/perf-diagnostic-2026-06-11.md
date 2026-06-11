@@ -254,3 +254,44 @@ Deliberately NOT done (deferred, higher risk):
 Remaining live-extension smoke test after reload: open panel, Download Label from a
 real Outlook email, Use → extract → print preview; check lab-mode debug report shows
 `timings`.
+
+---
+
+## Round 2 (2026-06-11 evening) — model scoping + lazy encode + orient-from-canvas
+
+Goal: every extract under 5 s without changing detection results. Measured first
+(perf-check.html now records per-stage timings via the trace sink + the model's
+argmax page): after Round 1, the ONNX stage was 60–80 % of every slow file —
+~0.7 s per page, run on every rendered page, sequentially after the heuristics.
+
+| Change | Commit | Verified |
+|---|---|---|
+| Scope ONNX inference to pages that matter (`modelInferencePageScope` in label-detector; `detectPages(pages, pageIndexes)`) — rect-backed candidate pages + embedded-label-looking pages; n-up duplicate sheets (same border rect on 3+ pages) skip the model entirely; no candidates → all pages as before | 25e9786 | full 60-PDF corpus |
+| Lazy PNG encode: `canvasToLabel` dataUrl is a cached getter + carries the canvas; `localDetectionToLabel` base64 lazy (`defineLazyBase64`); losers cut by the variant limit never encode | 0b0e7da | full 60-PDF corpus |
+| Orientation pass draws from `label.sourceCanvas` (no base64 decode per candidate, no probe copy for canvas-backed portrait labels); rotated labels re-encode lazily | 0b0e7da | corpus + parse-check |
+| `addMissingPageCropOptions` builds fallbacks only for kept missing pages (same sort+limit selection) | 0b0e7da | parse-check |
+
+**Identity bar:** candidates byte-identical (reason/conf/page/size/rect, top 20) on
+58/60 files; the 2 Ellie n-up files lose only their last-place trained-model
+candidate (conf 0.924 but below 6 dashed @0.97 + 6 solid @0.90 — position 19,
+outside the 6-variant UI limit, never shown). The Online Return Center (5)
+borderless-label page is exactly why the scope includes embedded-label-looking
+pages — its visible model candidate is unchanged.
+
+**Numbers (full 60-file corpus, model warm):** 93.6 s → 65.5 s. Ellie 6-up
+6.0 → 1.3 s, ORC (4) 3.0 → 1.6 s, orc9 2.8 → 1.5 s, viewlabel 2.0 → 1.8 s.
+Worst file is now fashion.pdf at 2.7 s, and >half of that is pdf.js page
+rendering (processMs), not detection.
+
+**Rejected on purpose:** downscaling the `detectUprightFlip` probe — its
+FLIP_MIN_TRANSITIONS/FLIP_MIN_MASS thresholds are absolute, so a smaller probe
+could change flip decisions. ONNX COOP/COEP threading stays deferred (file://
+fetch risk, needs its own live pass).
+
+**Trade-off:** shown candidates retain their crop canvas (`sourceCanvas`) until
+Clear — tens of MB while results are on screen, in exchange for skipped
+encodes/decodes. Auto-clear already bounds the window.
+
+Live smoke test after reload (not yet done): Outlook → Download Label → Use →
+extract (check debug-report timings) → Rotate/Crop on one candidate → print
+preview → Reprint last. A landscape-source label should still come out upright.
