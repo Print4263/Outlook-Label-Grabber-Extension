@@ -55,6 +55,22 @@
     return { ...preset, ...options };
   }
 
+  // One full-canvas pixel snapshot per canvas, shared by every pass that reads
+  // pixels (content bounds, gap clamp, content rescue, upright flip) and
+  // exported so label-detector / pdf-processor reuse the same snapshot instead
+  // of each keeping their own copy. WeakMap: entries release with the canvas.
+  // eraseFaintRules mutates canvases and invalidates its entry below.
+  const pixelCache = new WeakMap();
+  function pixelsFor(canvas) {
+    let data = pixelCache.get(canvas);
+    if (!data) {
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      pixelCache.set(canvas, data);
+    }
+    return data;
+  }
+
   function imageDataToCanvas(imageData) {
     const canvas = document.createElement("canvas");
     canvas.width = imageData.width;
@@ -65,9 +81,8 @@
 
   async function autoCropCanvas(sourceCanvas, padding = 6, options = {}) {
     const resolved = resolveCropOptions(options);
-    const ctx = sourceCanvas.getContext("2d", { willReadFrequently: true });
     const { width, height } = sourceCanvas;
-    const data = ctx.getImageData(0, 0, width, height).data;
+    const data = pixelsFor(sourceCanvas);
     const bounds = findContentBounds(data, width, height, resolved);
 
     if (!bounds) {
@@ -190,8 +205,8 @@
 
   function clampPaddingAtGaps(sourceCanvas, inner, outer) {
     if (outer.width <= 0 || outer.height <= 0) return outer;
-    const ctx = sourceCanvas.getContext("2d", { willReadFrequently: true });
-    const data = ctx.getImageData(outer.x, outer.y, outer.width, outer.height).data;
+    const data = pixelsFor(sourceCanvas);
+    const canvasWidth = sourceCanvas.width;
     const whiteThreshold = 246;
     const gapMin = Math.max(
       GAP_CLAMP_MIN_PIXELS,
@@ -199,10 +214,10 @@
     );
 
     const rowHasContent = (y) => {
-      const base = (y - outer.y) * outer.width;
+      const base = y * canvasWidth;
       const minCount = Math.max(2, Math.floor(outer.width * 0.002));
       let count = 0;
-      for (let x = 0; x < outer.width; x += 1) {
+      for (let x = outer.x; x < outer.x + outer.width; x += 1) {
         const i = (base + x) * 4;
         if (data[i + 3] < 16) continue;
         if (data[i] >= whiteThreshold && data[i + 1] >= whiteThreshold && data[i + 2] >= whiteThreshold) continue;
@@ -213,11 +228,10 @@
     };
 
     const colHasContent = (x) => {
-      const col = x - outer.x;
       const minCount = Math.max(2, Math.floor(outer.height * 0.002));
       let count = 0;
-      for (let y = 0; y < outer.height; y += 1) {
-        const i = (y * outer.width + col) * 4;
+      for (let y = outer.y; y < outer.y + outer.height; y += 1) {
+        const i = (y * canvasWidth + x) * 4;
         if (data[i + 3] < 16) continue;
         if (data[i] >= whiteThreshold && data[i + 1] >= whiteThreshold && data[i + 2] >= whiteThreshold) continue;
         count += 1;
@@ -287,7 +301,10 @@
   function extendThroughContent(sourceCanvas, inner, options = {}) {
     const W = sourceCanvas.width, H = sourceCanvas.height;
     if (inner.width <= 0 || inner.height <= 0) return inner;
-    const ctx = sourceCanvas.getContext("2d", { willReadFrequently: true });
+    // One shared snapshot instead of a getImageData readback per scanned line —
+    // the walk covers hundreds of lines per side, and a readback each was the
+    // single biggest cost in the whole extraction pipeline.
+    const data = pixelsFor(sourceCanvas);
     const whiteThreshold = 246;
     const gap = Math.max(
       CONTENT_EXTEND_MIN_GAP,
@@ -306,24 +323,25 @@
     // pixels across the inner span (matches the threshold used elsewhere).
     const rowHasContent = (y) => {
       if (y < 0 || y >= H || x1 <= x0) return false;
-      const d = ctx.getImageData(x0, y, x1 - x0, 1).data;
+      const base = y * W;
       const need = Math.max(2, Math.floor((x1 - x0) * 0.004));
       let c = 0;
-      for (let i = 0; i < d.length; i += 4) {
-        if (d[i + 3] < 16) continue;
-        if (d[i] >= whiteThreshold && d[i + 1] >= whiteThreshold && d[i + 2] >= whiteThreshold) continue;
+      for (let x = x0; x < x1; x += 1) {
+        const i = (base + x) * 4;
+        if (data[i + 3] < 16) continue;
+        if (data[i] >= whiteThreshold && data[i + 1] >= whiteThreshold && data[i + 2] >= whiteThreshold) continue;
         if (++c >= need) return true;
       }
       return false;
     };
     const colHasContent = (x) => {
       if (x < 0 || x >= W || y1 <= y0) return false;
-      const d = ctx.getImageData(x, y0, 1, y1 - y0).data;
       const need = Math.max(2, Math.floor((y1 - y0) * 0.004));
       let c = 0;
-      for (let i = 0; i < d.length; i += 4) {
-        if (d[i + 3] < 16) continue;
-        if (d[i] >= whiteThreshold && d[i + 1] >= whiteThreshold && d[i + 2] >= whiteThreshold) continue;
+      for (let y = y0; y < y1; y += 1) {
+        const i = (y * W + x) * 4;
+        if (data[i + 3] < 16) continue;
+        if (data[i] >= whiteThreshold && data[i + 1] >= whiteThreshold && data[i + 2] >= whiteThreshold) continue;
         if (++c >= need) return true;
       }
       return false;
@@ -441,8 +459,7 @@
   function detectUprightFlip(canvas) {
     const { width, height } = canvas;
     if (!width || !height) return false;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    const data = ctx.getImageData(0, 0, width, height).data;
+    const data = pixelsFor(canvas);
     const rowStep = 2;
     const colStep = 2;
     const cols = Math.max(1, Math.floor(width / colStep));
@@ -522,7 +539,11 @@
     const imageData = ctx.getImageData(0, 0, width, height);
     const erasedRows = eraseFaintRuleBands(imageData, "row");
     const erasedCols = eraseFaintRuleBands(imageData, "column");
-    if (erasedRows || erasedCols) ctx.putImageData(imageData, 0, 0);
+    if (erasedRows || erasedCols) {
+      ctx.putImageData(imageData, 0, 0);
+      // The canvas changed — drop any cached snapshot so readers see the erase.
+      pixelCache.delete(canvas);
+    }
     return erasedRows || erasedCols;
   }
 
@@ -634,6 +655,7 @@
     canvasToLabel,
     imageDataToCanvas,
     eraseFaintRules,
-    detectUprightFlip
+    detectUprightFlip,
+    pixelsFor
   };
 })();

@@ -53,7 +53,7 @@ function startDownloadsPolling() {
 
   if (chrome.downloads?.onCreated) {
     chrome.downloads.onCreated.addListener((download) => {
-      if (isSupportedDownload(download)) setTimeout(loadRecentDownloads, 800);
+      if (isSupportedDownload(download)) setTimeout(loadRecentDownloads, 300);
     });
   }
 
@@ -61,7 +61,9 @@ function startDownloadsPolling() {
     chrome.downloads.onChanged.addListener((delta) => {
       if (delta.state?.current !== "complete") return;
       chrome.downloads.search({ id: delta.id }, (items) => {
-        if (isSupportedDownload(items?.[0])) setTimeout(loadRecentDownloads, 500);
+        // The file is on disk once state is "complete" — only a short settle
+        // delay is needed before the Use row can appear.
+        if (isSupportedDownload(items?.[0])) setTimeout(loadRecentDownloads, 150);
       });
     });
   }

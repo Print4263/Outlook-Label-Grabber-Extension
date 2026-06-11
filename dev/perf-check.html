@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Perf / regression check</title>
+<style>body { font-family: "Segoe UI", Arial, sans-serif; margin: 16px; }</style>
+</head>
+<body>
+<h1>Perf / regression check</h1>
+<div id="status">scripts loading…</div>
+
+<script src="../lib/pdf.min.js"></script>
+<script src="../lib/ort.min.js"></script>
+<!-- Bump v= when comparing builds: python http.server + browser cache otherwise
+     serve stale detection scripts after an edit. -->
+<script src="../detection/crop-engine.js?v=2"></script>
+<script src="../detection/model-detector.js?v=2"></script>
+<script src="../detection/label-detector.js?v=2"></script>
+<script src="../detection/pdf-processor.js?v=2"></script>
+<script src="../detection/png-processor.js?v=2"></script>
+<script src="../config.js?v=2"></script>
+<script>
+window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
+
+// Runs each PDF through the real pipeline (LabelExtractorPDF.process +
+// detectPdfCandidates — same calls runLocalDetector makes) and records the
+// ranked candidates' reason/confidence/rect plus wall time. Results land on
+// window.__batch for eval-based collection; used to diff detection behavior
+// and timing before/after performance changes. Dev-only, not shipped.
+window.__batch = { done: false, results: [] };
+window.runBatch = async function (names) {
+  window.__batch = { done: false, results: [] };
+  const status = document.getElementById("status");
+  // Warm the model once so the first file doesn't absorb session-create time.
+  try { await window.LabelExtractorModelDetector.warmUp(); } catch (_) {}
+  for (const name of names) {
+    status.textContent = "running " + name;
+    const entry = { name };
+    try {
+      const buf = await (await fetch("diag-labels/" + encodeURIComponent(name))).arrayBuffer();
+      const t0 = performance.now();
+      const processed = await window.LabelExtractorPDF.process({ buffer: buf, type: "application/pdf", name });
+      let candidates = Array.isArray(processed) ? processed
+        : processed?.pages ? await window.LabelExtractorDetector.detectPdfCandidates(processed.pages)
+        : [processed];
+      entry.ms = Math.round(performance.now() - t0);
+      entry.candidates = (candidates || []).filter(Boolean).slice(0, 8).map((c) => ({
+        reason: c.reason || "",
+        conf: +Number(c.confidence || 0).toFixed(3),
+        page: Number(c.pageIndex || 0),
+        size: c.label ? [c.label.width, c.label.height] : null,
+        rect: c.cropRect
+          ? [Math.round(c.cropRect.x), Math.round(c.cropRect.y), Math.round(c.cropRect.width), Math.round(c.cropRect.height)]
+          : null
+      }));
+    } catch (error) {
+      entry.error = String(error?.message || error);
+    }
+    window.__batch.results.push(entry);
+  }
+  window.__batch.done = true;
+  status.textContent = "done (" + names.length + " files)";
+  return window.__batch.results.length;
+};
+document.getElementById("status").textContent = "ready — call runBatch([names])";
+</script>
+</body>
+</html>

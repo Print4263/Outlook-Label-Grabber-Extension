@@ -54,6 +54,10 @@
   const BARCODE_EXCLUSION_PENALTY = -5;
 
   function getCanvasData(canvas) {
+    // Prefer the shared snapshot in crop-engine so the same canvas isn't read
+    // back and held in memory once per module.
+    const shared = window.LabelExtractorCrop?.pixelsFor;
+    if (shared) return shared(canvas);
     let data = canvasDataCache.get(canvas);
     if (data) return data;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });

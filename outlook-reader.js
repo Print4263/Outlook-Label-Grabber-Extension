@@ -258,8 +258,30 @@ if (window.__labelExtractorOutlookReaderLoaded) {
     };
   }
 
+  // The old scan walked every span/div in the Outlook app and built textContent
+  // for each — textContent on a container serializes its whole subtree, so the
+  // click paid an O(N²) text traversal of the entire SPA (seconds on big
+  // mailboxes). Scan only attachment-shaped elements inside the reading pane,
+  // read the cheap attributes first, and only touch textContent on small
+  // subtrees. Falls back to a document-wide scan when the pane scan finds
+  // nothing, so unusual Outlook layouts still work.
+  const ATTACHMENT_SCAN_SELECTOR = [
+    "button", "a", "[role='button']",
+    "[title]", "[aria-label]", "[download]",
+    "[data-testid*='Attachment']", "[data-testid*='attachment']",
+    "[class*='attachment']", "[class*='Attachment']"
+  ].join(", ");
+  const ATTACHMENT_TEXT_MAX_DESCENDANTS = 60;
+
   function findAttachmentCandidates() {
-    const elements = Array.from(document.querySelectorAll("button, a, [role='button'], [title], [aria-label], [data-testid], span, div"));
+    const pane = findReadingPane();
+    const candidates = collectAttachmentCandidates(pane || document.body);
+    if (candidates.length || !pane) return candidates;
+    return collectAttachmentCandidates(document.body);
+  }
+
+  function collectAttachmentCandidates(root) {
+    const elements = Array.from(root.querySelectorAll(ATTACHMENT_SCAN_SELECTOR));
     const candidates = [];
     const seen = new Set();
 
@@ -280,12 +302,31 @@ if (window.__labelExtractorOutlookReaderLoaded) {
   }
 
   function attachmentFileName(element) {
-    const text = [
-      element.textContent,
+    const attrText = [
       element.getAttribute?.("title"),
       element.getAttribute?.("aria-label"),
       element.getAttribute?.("download")
     ].filter(Boolean).join(" ");
+    const fromAttr = matchLabelFileName(attrText);
+    if (fromAttr) return fromAttr;
+    if (element.getElementsByTagName && element.getElementsByTagName("*").length > ATTACHMENT_TEXT_MAX_DESCENDANTS) return "";
+    return matchLabelFileName(spacedText(element));
+  }
+
+  // textContent concatenates adjacent nodes without whitespace ("label.pdf" +
+  // "65 KB" -> "label.pdf65 KB"), which kills the \b in the filename pattern.
+  // Join the text nodes with spaces instead. Only called on small subtrees.
+  function spacedText(element) {
+    const parts = [];
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const value = walker.currentNode.nodeValue.trim();
+      if (value) parts.push(value);
+    }
+    return parts.join(" ");
+  }
+
+  function matchLabelFileName(text) {
     if (!text || text.length > 500 || !LABEL_FILE_PATTERN.test(text)) return "";
     const match = text.match(/[^\s"'<>:]+?\.(?:pdf|png|jpe?g|gif|webp|hei[cf])\b/i);
     return match ? match[0] : "";

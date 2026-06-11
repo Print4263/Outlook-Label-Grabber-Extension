@@ -822,13 +822,18 @@ async function extractSelectedFile() {
   setStatus("Extracting label - please wait...", "loading");
 
   try {
+    // Stage timings land in the debug report (lab mode > Copy debug report) so a
+    // slow extraction can be traced to its stage instead of guessed at.
+    const tStart = performance.now();
     const normalizedFile = await normalizeFileForExtraction(state.file);
     if (runId !== state.extractionRunId) return;
     setLoadingProgress(30);
+    const tNormalized = performance.now();
 
     const result = await tryLocalDetectorCandidate(normalizedFile);
     if (runId !== state.extractionRunId) return;
     setLoadingProgress(85);
+    const tDetected = performance.now();
 
     const localLabels = normalizeLocalResults(result);
     let candidates = await fullLabelCandidates(localLabels);
@@ -839,11 +844,13 @@ async function extractSelectedFile() {
       candidates = await fileFallbackCandidates(localLabels);
     }
     if (runId !== state.extractionRunId) return;
+    const tCandidates = performance.now();
 
     // Rotate any sideways/landscape result upright so it displays and prints as a
     // portrait 4x6 without the operator needing to hit Rotate first.
     candidates = await Promise.all(candidates.map(orientLabelToPortrait));
     if (runId !== state.extractionRunId) return;
+    const tOriented = performance.now();
 
     setLoadingProgress(100);
     state.lastExtractionSummary = {
@@ -852,7 +859,14 @@ async function extractSelectedFile() {
       rawLocalCount: localLabels.length,
       finalCandidateCount: candidates.length,
       usedFallback: candidates.some((label) => String(label.localReason || "").includes("fallback")),
-      pageCount: state.cachedPages?.length || 0
+      pageCount: state.cachedPages?.length || 0,
+      timings: {
+        totalMs: Math.round(tOriented - tStart),
+        normalizeMs: Math.round(tNormalized - tStart),
+        detectMs: Math.round(tDetected - tNormalized),
+        candidatesMs: Math.round(tCandidates - tDetected),
+        orientMs: Math.round(tOriented - tCandidates)
+      }
     };
     state.results = candidates;
     state.selectedLabelIndex = candidates.length ? 0 : -1;

@@ -206,8 +206,9 @@ async function grabOutlookLabelAttachment(sender) {
     await chrome.tabs.update(tab.id, { active: true });
   } catch (_) {}
 
-  await injectOutlookReader(tab.id);
-
+  // The reader is normally already injected by the tabs.onUpdated listener, so
+  // message it directly; only pay the executeScript round trip when there is no
+  // listener yet (fresh tab, extension reloaded).
   try {
     return await chrome.tabs.sendMessage(tab.id, { type: "grab-outlook-label-attachment" });
   } catch (_) {

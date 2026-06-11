@@ -46,6 +46,10 @@
   // scans plus a per-band rescan). Share one getImageData read per canvas.
   const pixelCache = new WeakMap();
   function pixelsFor(canvas) {
+    // Prefer the shared snapshot in crop-engine so the same canvas isn't read
+    // back and held in memory once per module.
+    const shared = window.LabelExtractorCrop?.pixelsFor;
+    if (shared) return shared(canvas);
     let data = pixelCache.get(canvas);
     if (data) return data;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
