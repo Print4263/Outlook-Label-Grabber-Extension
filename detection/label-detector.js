@@ -177,51 +177,39 @@
     const ranked = dedupeDetections(candidates)
       .filter((candidate) => !isLikelyTextInstructionPage(findPage(candidate.pages || pages, candidate.pageIndex), candidate.reason))
       .sort(compareDetections);
-    return promoteModelOverNestedBorder(ranked);
+    return promoteModelOverBorder(ranked);
   }
 
-  // On UPS CampusShip-style sheets the border detectors lock onto a bordered
-  // panel inside the label, so their crop loses the ship-to block, while the
-  // trained model boxes the whole label. When the winning border rect is a
-  // strict sub-region of a confident model box and the model box — not the
-  // border — is the one shaped like a 4x6 label, the model has the better
-  // crop: promote it to the front. The conditions are deliberately narrow so
-  // border detections keep winning everywhere else.
-  const NESTED_BORDER_MAX_AREA_RATIO = 0.75;
-  const NESTED_MODEL_MIN_CONFIDENCE = 0.9;
-  const NESTED_ASPECT_MIN_MARGIN = 0.05;
-  const NESTED_BORDER_REASONS = ["solid-border", "dashed-border"];
+  // The border detectors (solid/dashed) lock onto the printed frame, which on
+  // return-label sheets encloses the carrier's instruction block ("To complete
+  // your return…", "Cut this label…") together with the label, so the crop comes
+  // out bloated with text. Measured across the real corpus, whenever the trained
+  // model fires CONFIDENTLY on a border-won page it boxes just the 4x6 label and
+  // drops the instructions — the cleaner crop every time. So when a confident,
+  // label-shaped model candidate exists on the same page, promote it over the
+  // border. The confidence floor skips shaky low-confidence model boxes (those
+  // keep the border crop); the aspect guard blocks a degenerate, non-label box
+  // from ever winning. Borders still win on pages where the model didn't fire or
+  // isn't confident.
+  const MODEL_OVER_BORDER_MIN_CONFIDENCE = 0.80;
+  const MODEL_OVER_BORDER_MAX_ASPECT_DISTANCE = 0.45;
+  const MODEL_BORDER_REASONS = ["solid-border", "dashed-border"];
 
-  function promoteModelOverNestedBorder(ranked) {
+  function promoteModelOverBorder(ranked) {
     const top = ranked[0];
-    if (!NESTED_BORDER_REASONS.includes(top?.reason) || !top.cropRect) return ranked;
+    if (!MODEL_BORDER_REASONS.includes(top?.reason) || !top.cropRect) return ranked;
     const model = ranked.find((candidate) => candidate?.reason === "trained-model");
     if (!model || model.pageIndex !== top.pageIndex || !model.cropRect) return ranked;
-    if (Number(model.confidence || 0) < NESTED_MODEL_MIN_CONFIDENCE) return ranked;
-    if (!rectContainsRect(model.cropRect, top.cropRect)) return ranked;
-    const areaRatio = rectArea(top.cropRect) / Math.max(1, rectArea(model.cropRect));
-    if (areaRatio > NESTED_BORDER_MAX_AREA_RATIO) return ranked;
-    if (labelAspectDistance(model.cropRect) >= labelAspectDistance(top.cropRect) - NESTED_ASPECT_MIN_MARGIN) return ranked;
-    trace("model-over-nested-border", {
+    if (Number(model.confidence || 0) < MODEL_OVER_BORDER_MIN_CONFIDENCE) return ranked;
+    if (labelAspectDistance(model.cropRect) > MODEL_OVER_BORDER_MAX_ASPECT_DISTANCE) return ranked;
+    trace("model-over-border", {
+      borderReason: top.reason,
       borderRect: top.cropRect,
       modelRect: model.cropRect,
-      areaRatio,
-      note: "solid-border rect is a sub-region of a label-shaped model box; model promoted"
+      modelConfidence: model.confidence,
+      note: "confident, label-shaped trained-model promoted over border crop"
     });
     return [model, ...ranked.filter((candidate) => candidate !== model)];
-  }
-
-  function rectArea(rect) {
-    return Math.max(0, Number(rect.width || 0)) * Math.max(0, Number(rect.height || 0));
-  }
-
-  function rectContainsRect(outer, inner) {
-    const tolX = Math.max(8, outer.width * 0.05);
-    const tolY = Math.max(8, outer.height * 0.05);
-    return inner.x >= outer.x - tolX
-      && inner.y >= outer.y - tolY
-      && inner.x + inner.width <= outer.x + outer.width + tolX
-      && inner.y + inner.height <= outer.y + outer.height + tolY;
   }
 
   // Distance from a 4x6 thermal label's aspect ratio (either orientation); 0 = exact.
