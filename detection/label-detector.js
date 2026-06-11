@@ -111,12 +111,18 @@
     if (labelSizedHit) candidates.push(labelSizedHit);
     stage("label-sized");
 
-    const strongEarly = rankedDetections(candidates, pages)[0];
+    const rankedEarly = rankedDetections(candidates, pages);
+    const strongEarly = rankedEarly[0];
     if (Number(strongEarly?.confidence || 0) >= 0.95
       && !shouldPreferCarrierText(strongEarly, pages)
+      && !isTallOverstuffedBorder(strongEarly, pages)
       && cropContainsBarcodeOrUnknown(strongEarly, pages)) {
       trace("early-exit", { detector: strongEarly.reason, reason: strongEarly.reason, confidence: Number(strongEarly.confidence || 0), score: detectionRankScore(strongEarly), note: "deterministic hit >=0.95 short-circuited the ONNX model" });
-      return [strongEarly];
+      // Same speed win (model + later stages skipped), but keep the other
+      // candidates computed so far: when the strong hit boxes the wrong region
+      // (e.g. a dashed frame around instructions + label), the picker still
+      // offers the alternatives instead of a single take-it-or-leave-it crop.
+      return rankedEarly;
     }
 
     const modelScope = modelInferencePageScope(candidates, pages);
@@ -140,10 +146,23 @@
     if (barcodeHit) candidates.push(barcodeHit);
     stage("barcode");
 
-    candidates.push(...await textLabelPageFallbacks(pages));
-    stage("text-label-fallback");
-    candidates.push(...await embeddedLabelPageFallbacks(pages));
-    stage("embedded-label-fallback");
+    // The page fallbacks cost a full-page content scan + crop chain per page,
+    // and their low-confidence whole-page candidates never outrank a solid
+    // detection — they only matter when nothing strong was found. Multi-page
+    // return packets (5 pages) spent ~1.5s here for variants the app's
+    // missing-page crop options provide anyway.
+    const hasStrongRect = candidates.some((candidate) => candidate?.cropRect
+      && Number(candidate.confidence || 0) >= 0.9
+      && cropContainsBarcodeOrUnknown(candidate, pages));
+    if (!hasStrongRect) {
+      candidates.push(...await textLabelPageFallbacks(pages));
+      stage("text-label-fallback");
+      candidates.push(...await embeddedLabelPageFallbacks(pages));
+      stage("embedded-label-fallback");
+    } else {
+      stage("text-label-fallback", { skipped: true, note: "strong rect-backed candidate present" });
+      stage("embedded-label-fallback", { skipped: true, note: "strong rect-backed candidate present" });
+    }
 
     if (!candidates.length && pages.length === 1) {
       candidates.push({
@@ -182,7 +201,7 @@
     const ranked = dedupeDetections(candidates)
       .filter((candidate) => !isLikelyTextInstructionPage(findPage(candidate.pages || pages, candidate.pageIndex), candidate.reason))
       .sort(compareDetections);
-    return demoteOrderDetailsPages(promoteModelOverBorder(promoteDetectionOverTextGuess(ranked)), pages);
+    return demoteOrderDetailsPages(promoteModelOverBorder(promoteDetectionOverTextGuess(ranked), pages), pages);
   }
 
   // Multi-page label PDFs ride along with order-details pages — packing slips,
@@ -265,22 +284,42 @@
   const MODEL_OVER_BORDER_MIN_CONFIDENCE = 0.80;
   const MODEL_OVER_BORDER_MAX_ASPECT_DISTANCE = 0.45;
   const MODEL_BORDER_REASONS = ["solid-border", "dashed-border"];
+  // Tall phone screenshots: a "border" whose crop is basically the whole screen
+  // found the screen bezel/app chrome, not a label frame. There the model's box
+  // is trusted at a lower confidence floor.
+  const SCREENSHOT_PAGE_MIN_ASPECT = 1.8;          // page h/w
+  const SCREENSHOT_BORDER_MIN_AREA_RATIO = 0.85;   // border output vs page
+  const SCREENSHOT_MODEL_MIN_CONFIDENCE = 0.55;
 
-  function promoteModelOverBorder(ranked) {
+  function promoteModelOverBorder(ranked, pages) {
     const top = ranked[0];
     if (!MODEL_BORDER_REASONS.includes(top?.reason) || !top.cropRect) return ranked;
     const model = ranked.find((candidate) => candidate?.reason === "trained-model");
     if (!model || model.pageIndex !== top.pageIndex || !model.cropRect) return ranked;
-    if (Number(model.confidence || 0) < MODEL_OVER_BORDER_MIN_CONFIDENCE) return ranked;
     if (labelAspectDistance(model.cropRect) > MODEL_OVER_BORDER_MAX_ASPECT_DISTANCE) return ranked;
+    const confidence = Number(model.confidence || 0);
+    const confident = confidence >= MODEL_OVER_BORDER_MIN_CONFIDENCE;
+    if (!confident && !(confidence >= SCREENSHOT_MODEL_MIN_CONFIDENCE
+      && isFullPageBorderOnTallPage(top, pages))) return ranked;
     trace("model-over-border", {
       borderReason: top.reason,
       borderRect: top.cropRect,
       modelRect: model.cropRect,
       modelConfidence: model.confidence,
-      note: "confident, label-shaped trained-model promoted over border crop"
+      note: confident
+        ? "confident, label-shaped trained-model promoted over border crop"
+        : "screenshot-shaped page: whole-screen border crop demoted below accepted model box"
     });
     return [model, ...ranked.filter((candidate) => candidate !== model)];
+  }
+
+  function isFullPageBorderOnTallPage(candidate, pages) {
+    const page = findPage(candidate.pages || pages || [], candidate.pageIndex);
+    const canvas = page?.canvas;
+    if (!canvas || canvas.height < canvas.width * SCREENSHOT_PAGE_MIN_ASPECT) return false;
+    const out = candidate.label?.sourceRect || candidate.cropRect;
+    return (out.width * out.height) / Math.max(1, canvas.width * canvas.height)
+      >= SCREENSHOT_BORDER_MIN_AREA_RATIO;
   }
 
   // Distance from a 4x6 thermal label's aspect ratio (either orientation); 0 = exact.
@@ -376,7 +415,10 @@
       stage("manual-image-fallback");
     }
 
-    const ranked = dedupeDetections(candidates).sort(compareDetections);
+    // Same ranking pipeline as the PDF path — without it, images never get
+    // model-over-border promotion, so a screenshot whose solid border wraps
+    // the whole phone screen beat the model's label box every time.
+    const ranked = rankedDetections(candidates, pages);
     traceRanked(ranked);
     return ranked;
   }
@@ -499,8 +541,15 @@
   // cut-frame, so border/model rects wrap it in with the label. No-op on pages
   // without slip text.
   function clampRectAboveSlip(rect, page) {
-    if (!rect || !page?.slipRects?.length) return rect;
-    return window.LabelExtractorCrop.clampRectBottomAboveBlockers(rect, page.slipRects, page.canvas);
+    if (!rect) return rect;
+    let next = rect;
+    if (page?.slipRects?.length) {
+      next = window.LabelExtractorCrop.clampRectBottomAboveBlockers(next, page.slipRects, page.canvas);
+    }
+    if (page?.cutLineRects?.length) {
+      next = window.LabelExtractorCrop.clampRectTopBelowBlockers(next, page.cutLineRects, page.canvas);
+    }
+    return next;
   }
 
   function autoCropPageCanvas(page, padding = 6) {
@@ -802,7 +851,19 @@
     if (/USPS|POSTAL SERVICE|GROUND ADVANTAGE|PRIORITY MAIL/.test(value)) score += 1.2;
     if (/RETURN MAILING LABEL|MAILING LABEL|RETURN LABEL/.test(value)) score += 1;
     if (/TRACKING|SHIP TO|SHIP FROM/.test(value)) score += 0.6;
+    // "Cut this label…" / "Place this label on the outside…" — the page is
+    // announcing it CARRIES the label. Multi-page return packets pair one such
+    // page with instruction pages whose hallucinated border boxes otherwise
+    // outrank the real label page (its dashed candidate eats the UPS-text
+    // demotion; the instruction page eats nothing).
+    if (LABEL_CARRIER_PAGE_PATTERN.test(value)) score += 1;
     return score;
+  }
+
+  const LABEL_CARRIER_PAGE_PATTERN = /CUT THIS LABEL|PLACE THIS LABEL|AFFIX THIS LABEL|ATTACH THIS LABEL/;
+
+  function declaresLabelPage(page) {
+    return LABEL_CARRIER_PAGE_PATTERN.test(String(page?.text || "").toUpperCase());
   }
 
   function instructionTextScore(text) {
@@ -907,6 +968,23 @@
     return candidate?.reason === "dashed-border" && isUpsLabelText(page?.text);
   }
 
+  // A border box much taller than a 4x6 frame that also fills most of the page
+  // is the "instructions + label inside one cut frame" layout (UPS View/Print
+  // sheets exported as image-only PDFs — no text, so the fold/carrier checks
+  // can't catch them). Don't let it short-circuit the cascade: the model boxes
+  // just the label on these and wins via promoteModelOverBorder.
+  const TALL_BORDER_MIN_HEIGHT_RATIO = 1.65; // rect h/w; 4x6 portrait is 1.5
+  const TALL_BORDER_MIN_AREA_RATIO = 0.45;   // of the page
+
+  function isTallOverstuffedBorder(candidate, pages) {
+    if (!MODEL_BORDER_REASONS.includes(candidate?.reason) || !candidate.cropRect) return false;
+    const rect = candidate.cropRect;
+    if (rect.height < rect.width * TALL_BORDER_MIN_HEIGHT_RATIO) return false;
+    const canvas = findPage(candidate.pages || pages || [], candidate.pageIndex)?.canvas;
+    if (!canvas) return false;
+    return rect.width * rect.height >= canvas.width * canvas.height * TALL_BORDER_MIN_AREA_RATIO;
+  }
+
   function carrierTextPreferenceScore(candidate, page) {
     if (!isUpsLabelText(page?.text)) return 0;
     if (candidate?.reason === "keywords") return 3;
@@ -971,21 +1049,43 @@
     const rectBacked = candidates.filter((candidate) => candidate?.cropRect);
     if (!rectBacked.length) return { pageIndexes: null, note: "all pages (no rect-backed candidates)" };
     if (isNUpDuplicateSheet(rectBacked, pages)) {
-      trace("model-scope", { skip: true, note: "n-up duplicate sheet; model skipped" });
-      return { skip: true, note: "skipped (n-up duplicate sheet)" };
+      // Every duplicate page would give the same prediction, so one inference
+      // covers the sheet. Use the page the ranking favors (highest pageIndex —
+      // detectionRankScore adds a small later-page bonus) so same-page
+      // model-over-border promotion still applies to the winner.
+      const topPage = Math.max(...rectBacked.map((candidate) => Number(candidate.pageIndex || 0)));
+      trace("model-scope", { note: `n-up duplicate sheet; model on page ${topPage} only` });
+      return { pageIndexes: new Set([topPage]), note: `page ${topPage} only (n-up duplicate sheet)` };
     }
-    const pageIndexes = new Set(rectBacked.map((candidate) => Number(candidate.pageIndex || 0)));
+    // Pages that DECLARE they carry the label ("Cut this label…") narrow the
+    // scope further: a 5-page return packet has rect-backed candidates on
+    // instruction pages too (hallucinated boxes), and each skipped page saves
+    // a ~0.7s inference. Without a declaration, every rect-backed page stays.
+    const declared = pages.filter((page) => page?.canvas && !page.isCropOption && declaresLabelPage(page))
+      .map((page) => Number(page.pageIndex || 0));
+    const pageIndexes = declared.length
+      ? new Set(declared)
+      : new Set(rectBacked.map((candidate) => Number(candidate.pageIndex || 0)));
+    // With a declared label page, only hard evidence re-adds other pages:
+    // every page of a return packet carries embedded LOGO images, and the
+    // embeddedImageCount trigger alone would put the whole document back in
+    // scope (~0.7s inference per page).
+    const looksRelevant = declared.length ? hasBarcodeOrReturnLabelCue : looksLikeEmbeddedLabelPage;
     for (const page of pages) {
       if (!page?.canvas || page.isCropOption) continue;
       const index = Number(page.pageIndex || 0);
       if (pageIndexes.has(index)) continue;
-      if (looksLikeEmbeddedLabelPage(page)) pageIndexes.add(index);
+      if (looksRelevant(page)) pageIndexes.add(index);
     }
     return { pageIndexes, note: `pages ${[...pageIndexes].sort((a, b) => a - b).join(",")} of ${pages.length}` };
   }
 
   function looksLikeEmbeddedLabelPage(page) {
     if (Number(page.embeddedImageCount || 0) > 0) return true;
+    return hasBarcodeOrReturnLabelCue(page);
+  }
+
+  function hasBarcodeOrReturnLabelCue(page) {
     const text = String(page.text || "").toUpperCase();
     if (/RETURN AUTHORIZATION SLIP|PLACE THIS BARCODE|RETURN MAILING LABEL/.test(text)) return true;
     return findBarcodeRegions(page.canvas).length >= 2;
@@ -1375,7 +1475,7 @@
     const colGroups = groupNearbyValues(cols, Math.max(3, stepX * 3));
     if (rowGroups.length < 2 || colGroups.length < 2) return null;
 
-    let best = null;
+    const plausible = [];
     for (let topIndex = 0; topIndex < rowGroups.length - 1; topIndex += 1) {
       for (let bottomIndex = topIndex + 1; bottomIndex < rowGroups.length; bottomIndex += 1) {
         for (let leftIndex = 0; leftIndex < colGroups.length - 1; leftIndex += 1) {
@@ -1391,14 +1491,82 @@
               height: bottom.value - top.value
             };
             if (!looksLikeLabelRect(rect, canvas)) continue;
-            const score = rect.width * rect.height;
-            if (!best || score > best.score) best = { rect, score };
+            plausible.push(rect);
           }
         }
       }
     }
+    if (!plausible.length) return null;
 
-    return best && best.rect;
+    // A dense row/col of TEXT passes the dark-count threshold just like a
+    // drawn line does, so the biggest box often has a phantom edge sitting on
+    // a heading ("Additional Instructions…") instead of the label frame —
+    // annexing the instruction block above the label. Require every edge of
+    // the winning box to individually look like a drawn border line; fall back
+    // to the old biggest-box pick when nothing qualifies (faint/scanned
+    // borders must keep detecting).
+    plausible.sort((a, b) => b.width * b.height - a.width * a.height);
+    const qualified = plausible
+      .slice(0, SOLID_BORDER_EDGE_CHECK_LIMIT)
+      .find((rect) => minBorderEdgeDarkness(rect, canvas) >= SOLID_BORDER_MIN_EDGE_DARKNESS);
+    return qualified || plausible[0];
+  }
+
+  // A printed border line is CONTINUOUS along its whole run. Phantom edges are
+  // not: a heading underline tops a box whose sides only carry the real label
+  // frame for part of their span (the stretch above the label is white), so
+  // whole-edge averages still look decent (~0.8). Checking each edge in
+  // quarter segments exposes the white stretch — every segment of every edge
+  // must be mostly dark. The biggest-box fallback keeps faint/scanned borders
+  // detecting as before.
+  const SOLID_BORDER_MIN_EDGE_DARKNESS = 0.5;
+  const SOLID_BORDER_EDGE_SEGMENTS = 4;
+  const SOLID_BORDER_EDGE_CHECK_LIMIT = 12;
+
+  // Weakest segment fraction across all four edges. Samples a 3px band so
+  // group-centring drift and photo blur don't miss a thin line.
+  function minBorderEdgeDarkness(rect, canvas) {
+    const data = getCanvasData(canvas);
+    const left = clamp(Math.round(rect.x), 0, canvas.width - 1);
+    const right = clamp(Math.round(rect.x + rect.width), 0, canvas.width - 1);
+    const top = clamp(Math.round(rect.y), 0, canvas.height - 1);
+    const bottom = clamp(Math.round(rect.y + rect.height), 0, canvas.height - 1);
+    const rowDark = (y, x) => {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        const yy = clamp(y + dy, 0, canvas.height - 1);
+        if (isDark(data, (yy * canvas.width + x) * 4)) return true;
+      }
+      return false;
+    };
+    const colDark = (x, y) => {
+      for (let dx = -1; dx <= 1; dx += 1) {
+        const xx = clamp(x + dx, 0, canvas.width - 1);
+        if (isDark(data, (y * canvas.width + xx) * 4)) return true;
+      }
+      return false;
+    };
+    const edgeMinSegment = (length, test) => {
+      const segment = Math.max(1, Math.floor(length / SOLID_BORDER_EDGE_SEGMENTS));
+      let weakest = 1;
+      for (let s = 0; s < SOLID_BORDER_EDGE_SEGMENTS; s += 1) {
+        const from = s * segment;
+        const to = s === SOLID_BORDER_EDGE_SEGMENTS - 1 ? length : from + segment;
+        let dark = 0;
+        let sampled = 0;
+        for (let i = from; i <= to; i += 3) {
+          if (test(i)) dark += 1;
+          sampled += 1;
+        }
+        weakest = Math.min(weakest, dark / Math.max(1, sampled));
+      }
+      return weakest;
+    };
+    return Math.min(
+      edgeMinSegment(right - left, (i) => rowDark(top, left + i)),
+      edgeMinSegment(right - left, (i) => rowDark(bottom, left + i)),
+      edgeMinSegment(bottom - top, (i) => colDark(left, top + i)),
+      edgeMinSegment(bottom - top, (i) => colDark(right, top + i))
+    );
   }
 
   function looksLikeLabelRect(rect, canvas) {
@@ -1577,6 +1745,12 @@
 
   function isDark(data, index) {
     return data[index] < 170 && data[index + 1] < 170 && data[index + 2] < 170 && data[index + 3] > 20;
+  }
+
+  // Local on purpose: outside the sidepanel (training studio, dev harnesses)
+  // no global clamp exists, and this module's snap/border paths need one.
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
   }
 
   function findBarcodeRegions(canvas) {

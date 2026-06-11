@@ -220,6 +220,24 @@
     return rects;
   }
 
+  // "Cut this label and affix…" sits directly ABOVE the label on Amazon Online
+  // Return Center sheets (and similar return forms). Those labels often have no
+  // top border line of their own, so a solid-border box anchored on a heading
+  // underline higher up annexes the instruction block. Export the cut-line
+  // text rect so detectors can clamp their crop's TOP below it.
+  const CUT_LINE_PATTERN = /^cut this label\b/i;
+
+  function findCutLineRects(items, page) {
+    const pageHeight = page.getViewport({ scale: 1 }).height;
+    const rects = [];
+    for (const item of items || []) {
+      if (!item.transform) continue;
+      if (!CUT_LINE_PATTERN.test(String(item.str || "").trim())) continue;
+      rects.push(textItemRect(item, pageHeight));
+    }
+    return rects;
+  }
+
   async function process(captured) {
     try {
       const pdfjsLib = await loadPdfJs();
@@ -236,6 +254,7 @@
           let foldMarkerRects = [];
           let furnitureRects = [];
           let slipHeaderRects = [];
+          let cutLineRects = [];
           try {
             const textContent = await page.getTextContent();
             text = textContent.items.map((item) => item.str).join(" ");
@@ -243,6 +262,7 @@
             foldMarkerRects = findFoldMarkerRects(textContent.items, page);
             furnitureRects = findPrintFurnitureRects(textContent.items, page);
             slipHeaderRects = findSlipHeaderRects(textContent.items, page);
+            cutLineRects = findCutLineRects(textContent.items, page);
           } catch (_) {}
           const embeddedImageInfo = await extractEmbeddedImages(page, pdfjsLib);
           const embeddedImages = embeddedImageInfo.images;
@@ -256,6 +276,7 @@
             foldMarkerRects,
             furnitureRects,
             slipHeaderRects,
+            cutLineRects,
             embeddedImages,
             embeddedImageCount,
             priority: scoreLabelPage(text) + Math.min(embeddedImageCount, 3) * 0.75
@@ -317,12 +338,14 @@
     let foldMarkerRects = [];
     let furnitureRects = [];
     let slipHeaderRects = [];
+    let cutLineRects = [];
     try {
       const textContent = await page.getTextContent();
       text = textContent.items.map((item) => item.str).join(" ");
       foldMarkerRects = findFoldMarkerRects(textContent.items, page);
       furnitureRects = findPrintFurnitureRects(textContent.items, page);
       slipHeaderRects = findSlipHeaderRects(textContent.items, page);
+      cutLineRects = findCutLineRects(textContent.items, page);
     } catch (_) {}
     return renderPageEntry({
       pageIndex: idx,
@@ -333,12 +356,13 @@
       foldRatio: null,
       foldMarkerRects,
       furnitureRects,
-      slipHeaderRects
+      slipHeaderRects,
+      cutLineRects
     }, pdf.numPages);
   }
 
   async function renderPageEntry(entry, pageCount) {
-    const { pageIndex, page, text, embeddedImages, embeddedImageCount, foldRatio, foldMarkerRects, furnitureRects, slipHeaderRects } = entry;
+    const { pageIndex, page, text, embeddedImages, embeddedImageCount, foldRatio, foldMarkerRects, furnitureRects, slipHeaderRects, cutLineRects } = entry;
     const naturalViewport = page.getViewport({ scale: 1 });
     const renderScale = Math.min(4, Math.max(3, 1200 / naturalViewport.width));
     const viewport = page.getViewport({ scale: renderScale });
@@ -390,9 +414,16 @@
       foldRatio: Number.isFinite(foldRatio) ? foldRatio : null,
       embeddedImages: Array.isArray(embeddedImages) ? embeddedImages : [],
       embeddedImageCount: Number(embeddedImageCount || 0),
-      // Return-slip header rects in CANVAS coordinates, ready for detectors to
-      // clamp crop rects against (see clampRectBottomAboveBlockers).
+      // Return-slip header / cut-line rects in CANVAS coordinates, ready for
+      // detectors to clamp crop rects against (clampRectBottomAboveBlockers /
+      // clampRectTopBelowBlockers).
       slipRects: (Array.isArray(slipHeaderRects) ? slipHeaderRects : []).map((rect) => ({
+        x: rect.x * renderScale,
+        y: rect.y * renderScale,
+        width: rect.width * renderScale,
+        height: rect.height * renderScale
+      })),
+      cutLineRects: (Array.isArray(cutLineRects) ? cutLineRects : []).map((rect) => ({
         x: rect.x * renderScale,
         y: rect.y * renderScale,
         width: rect.width * renderScale,
@@ -508,6 +539,10 @@
     const page = twinPages[0];
     const rects = findTwinLabelRects(page.canvas);
     if (rects.length !== 2) return [];
+    // Both halves must be label-plausible. A page with one label plus a narrow
+    // side strip (receipt stub, fold flap) produces two bands too — splitting
+    // there shreds the single real label into two bogus variants.
+    if (!rects.every(isPlausibleTwinLabelRect) || !twinRectsSimilar(rects[0], rects[1])) return [];
 
     const labels = [];
     for (let index = 0; index < rects.length; index += 1) {
@@ -529,6 +564,25 @@
       });
     }
     return labels;
+  }
+
+  // A real twin sheet holds two copies of the same label, so the two band
+  // rects are roughly the same size and each is shaped like a label. The
+  // aspect range matches the detector's label-frame bounds.
+  const TWIN_RECT_MIN_ASPECT = 0.42;
+  const TWIN_RECT_MAX_ASPECT = 2.4;
+  const TWIN_RECT_MAX_SIZE_DIFF_RATIO = 0.4;
+
+  function isPlausibleTwinLabelRect(rect) {
+    const aspect = rect.width / Math.max(1, rect.height);
+    return aspect >= TWIN_RECT_MIN_ASPECT && aspect <= TWIN_RECT_MAX_ASPECT;
+  }
+
+  function twinRectsSimilar(a, b) {
+    const areaA = a.width * a.height;
+    const areaB = b.width * b.height;
+    return Math.min(areaA, areaB) / Math.max(1, Math.max(areaA, areaB))
+      >= 1 - TWIN_RECT_MAX_SIZE_DIFF_RATIO;
   }
 
   function findTwinLabelRects(canvas) {

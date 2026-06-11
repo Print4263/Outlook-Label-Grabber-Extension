@@ -25,7 +25,11 @@
   const MODEL_PATH = "models/shipping-label.onnx";
   const MIN_CONFIDENCE = 0.5;
   const CANDIDATE_CONFIDENCE = 0.01;
-  const MODEL_BOX_PADDING = 0.12;
+  // Keep the raw box nearly as-is: the crop engine now shrinks rects to content
+  // and rescues contiguous overflow itself, while a fat pad here annexes the
+  // instruction text next to the label — content the downstream shrink can
+  // never remove. (Was 0.12 when the crop chain had no shrink pass.)
+  const MODEL_BOX_PADDING = 0.02;
   let sessionPromise = null;
   let ortLoadPromise = null;
 
@@ -84,12 +88,17 @@
     });
     if (!accepted) return null;
 
-    // Keep the page's "Return Authorization Slip" section (slipRects, from
-    // pdf-processor) out of the model's box — the model happily includes it
-    // when the sheet prints the slip inside the same cut-frame as the label.
-    const rect = best.page.slipRects?.length
-      ? window.LabelExtractorCrop.clampRectBottomAboveBlockers(best.prediction.rect, best.page.slipRects, best.page.canvas)
-      : best.prediction.rect;
+    // Keep the page's "Return Authorization Slip" section (slipRects) and the
+    // "Cut this label…" instruction line (cutLineRects) out of the model's box
+    // — the model happily includes them when the sheet prints them inside the
+    // same cut-frame as the label.
+    let rect = best.prediction.rect;
+    if (best.page.slipRects?.length) {
+      rect = window.LabelExtractorCrop.clampRectBottomAboveBlockers(rect, best.page.slipRects, best.page.canvas);
+    }
+    if (best.page.cutLineRects?.length) {
+      rect = window.LabelExtractorCrop.clampRectTopBelowBlockers(rect, best.page.cutLineRects, best.page.canvas);
+    }
 
     return {
       confidence: Math.max(best.prediction.confidence, best.prediction.acceptedConfidence),
