@@ -150,12 +150,21 @@ function drawRotated(img, quarterTurns) {
 // and upside-down portrait sources all come out reading sender top-left, barcode
 // at the bottom. No-op when the label is already portrait and looks upright.
 async function orientLabelToPortrait(label) {
-  if (!label?.base64) return label;
-  let img;
-  try {
-    img = await loadImage(labelToDataUrl(label));
-  } catch (_) {
-    return label;
+  if (!label) return label;
+  // Prefer the detection pipeline's canvas (sourceCanvas, carried by
+  // localDetectionToLabel): drawing from it skips the base64 PNG decode that
+  // every candidate used to pay here. Checking sourceCanvas FIRST also matters
+  // for laziness — reading .base64 on a canvas-backed label forces its encode.
+  const sourceCanvas = label.sourceCanvas || null;
+  if (!sourceCanvas && !label.base64) return label;
+
+  let img = sourceCanvas;
+  if (!img) {
+    try {
+      img = await loadImage(labelToDataUrl(label));
+    } catch (_) {
+      return label;
+    }
   }
   const w = img.naturalWidth || img.width;
   const h = img.naturalHeight || img.height;
@@ -168,20 +177,32 @@ async function orientLabelToPortrait(label) {
     if (detectFlip && detectFlip(canvas)) canvas = drawRotated(img, 3);
   } else {
     if (!detectFlip) return label;
-    const probe = drawRotated(img, 0);
+    // A canvas source is scanned in place (crops are white-backed already);
+    // decoded images still need the white-backed copy drawRotated produces.
+    const probe = sourceCanvas || drawRotated(img, 0);
     if (!detectFlip(probe)) return label;
     canvas = drawRotated(img, 2);
   }
 
-  const dataUrl = canvas.toDataURL("image/png");
-  return {
-    ...label,
-    base64: dataUrl.split(",")[1],
-    outputMimeType: "image/png",
-    width: canvas.width,
-    height: canvas.height,
-    autoOriented: true
-  };
+  return orientedLabelFromCanvas(label, canvas);
+}
+
+// Copy the label's plain fields without touching base64 (reading it would
+// force the pre-rotation encode nobody needs), then hang the rotated canvas's
+// own lazy base64 on the copy.
+function orientedLabelFromCanvas(label, canvas) {
+  const next = {};
+  for (const key of Object.keys(label)) {
+    if (key === "base64") continue;
+    next[key] = label[key];
+  }
+  next.sourceCanvas = canvas;
+  next.outputMimeType = "image/png";
+  next.width = canvas.width;
+  next.height = canvas.height;
+  next.autoOriented = true;
+  defineLazyBase64(next, window.LabelExtractorCrop.canvasToLabel(canvas));
+  return next;
 }
 
 async function applyManualCrop() {

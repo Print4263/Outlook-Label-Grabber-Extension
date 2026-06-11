@@ -625,9 +625,19 @@
     return canvasToLabel(canvas);
   }
 
+  // dataUrl is a cached lazy getter: the PNG encode is the most expensive part
+  // of producing a crop, and most candidates are ranked out without ever being
+  // displayed. Only the labels something actually reads pay the encode. The
+  // canvas rides along so consumers that can draw directly (orientation pass,
+  // previews) skip the encode/decode round-trip entirely.
   function canvasToLabel(canvas) {
+    let encoded = "";
     return {
-      dataUrl: canvas.toDataURL("image/png"),
+      canvas,
+      get dataUrl() {
+        if (!encoded) encoded = canvas.toDataURL("image/png");
+        return encoded;
+      },
       width: canvas.width,
       height: canvas.height
     };

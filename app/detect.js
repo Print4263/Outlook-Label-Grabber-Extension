@@ -25,17 +25,22 @@ function localDetectionToLabel(result) {
   const likelyPartial = isLikelyPartialLocalDetection(result);
   if (likelyPartial && !canShowAsCropVariant(result)) return null;
 
-  const dataUrl = result.label.dataUrl;
-  const base64 = dataUrl.split(",")[1];
-  if (!base64) return null;
+  const source = result.label;
+  // Canvas-backed labels (crop-engine canvasToLabel) defer the PNG encode:
+  // base64 is a lazy getter below, so candidates the variant limit cuts never
+  // pay toDataURL. Pre-encoded labels (no canvas) keep the eager validity check.
+  if (!source.canvas) {
+    const base64 = String(source.dataUrl || "").split(",")[1];
+    if (!base64) return null;
+  }
 
-  return {
+  const label = {
     carrier: result.carrier || "Model",
     confidence: Math.min(0.99, Number(result.confidence || 0)),
     outputMimeType: "image/png",
-    base64,
-    width: result.label.width,
-    height: result.label.height,
+    sourceCanvas: source.canvas || null,
+    width: source.width,
+    height: source.height,
     variantName: result.variantName || localVariantName(result),
     warnings: labelWarnings(result, likelyPartial),
     sourcePage: Number(result.pageIndex || 0) + 1,
@@ -45,6 +50,26 @@ function localDetectionToLabel(result) {
     twinLabelIndex: result.twinLabelIndex || null,
     twinLabelCount: result.twinLabelCount || null
   };
+  defineLazyBase64(label, source);
+  return label;
+}
+
+// base64 materializes (and is cached on the object) the first time something
+// reads it; assigning a new value (e.g. after a rotation) replaces the getter.
+// Enumerable so spreads ({...label}) keep carrying base64, just as plain data.
+function defineLazyBase64(label, source) {
+  Object.defineProperty(label, "base64", {
+    enumerable: true,
+    configurable: true,
+    get() {
+      const value = String(source.dataUrl || "").split(",")[1] || "";
+      Object.defineProperty(this, "base64", { value, enumerable: true, configurable: true, writable: true });
+      return value;
+    },
+    set(value) {
+      Object.defineProperty(this, "base64", { value, enumerable: true, configurable: true, writable: true });
+    }
+  });
 }
 
 function canShowAsCropVariant(result) {
@@ -174,7 +199,10 @@ async function addMissingPageCropOptions(candidates, labels) {
   const missingPages = missingRenderedPages(candidates);
   if (!missingPages.length) return candidates;
 
-  const fallbackOptions = (await cachedFilePageFallbackLabels())
+  // Restrict to the missing pages BEFORE building fallbacks: each one costs a
+  // full-page dark-content scan plus a PNG encode, so building them for pages
+  // that are then filtered out is pure waste.
+  const fallbackOptions = (await cachedFilePageFallbackLabels(missingPages))
     .filter((label) => missingPages.includes(Number(label.sourcePage || 0)));
   if (!fallbackOptions.length) return candidates;
 
@@ -247,14 +275,17 @@ async function fileFallbackCandidates(labels) {
   return dedupeLabels([...fallbackFromLabels, ...fallbackFromPages]).slice(0, Math.max(4, limit));
 }
 
-async function cachedFilePageFallbackLabels() {
+async function cachedFilePageFallbackLabels(onlyPageNumbers) {
   if (!state.cachedPages?.length) return [];
 
   const pages = state.cachedPages
     .filter((page) => page?.canvas)
     .slice()
     .sort(compareFallbackPages)
-    .slice(0, FALLBACK_PAGE_LIMIT);
+    .slice(0, FALLBACK_PAGE_LIMIT)
+    // Same page selection as always (sort + limit over all pages); the filter
+    // only skips building labels that the caller would discard anyway.
+    .filter((page) => !onlyPageNumbers || onlyPageNumbers.includes(Number(page.pageIndex || 0) + 1));
 
   return pages.map(fileFallbackLabelFromPage).filter((label) => label.base64);
 }
