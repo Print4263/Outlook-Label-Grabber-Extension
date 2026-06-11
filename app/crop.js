@@ -170,15 +170,54 @@ async function orientLabelToPortrait(label) {
   const h = img.naturalHeight || img.height;
   if (!w || !h) return label;
 
-  const detectFlip = window.LabelExtractorCrop?.detectUprightFlip;
+  const crop = window.LabelExtractorCrop || {};
+  const detectFlip = crop.detectUprightFlip;
+  const bandStats = crop.barcodeBandStats;
+  const minMass = Number(crop.FLIP_MIN_MASS || 600);
   let canvas;
   if (w > h) {
     canvas = drawRotated(img, 1);
     if (detectFlip && detectFlip(canvas)) canvas = drawRotated(img, 3);
-  } else {
-    if (!detectFlip) return label;
+  } else if (bandStats) {
     // A canvas source is scanned in place (crops are white-backed already);
     // decoded images still need the white-backed copy drawRotated produces.
+    const probe = sourceCanvas || drawRotated(img, 0);
+    const upright = bandStats(probe);
+    if (upright && upright.mass >= minMass) {
+      // Confident horizontal tracking band: a normal portrait label. Flip
+      // 180 only when that band sits in the top half (upside-down source).
+      if (upright.centroidRatio >= 0.45) return label;
+      canvas = drawRotated(img, 2);
+    } else {
+      // No horizontal band — the label may be lying SIDEWAYS inside this
+      // portrait crop (a photo of a label rotated 90°). Probe a quarter
+      // turn: the bars only scan as a band when that's actually the case,
+      // so upright barcode-less labels are never touched. Normal labels
+      // never reach this probe (their upright band is strong).
+      const turned = drawRotated(img, 1);
+      const stats = bandStats(turned);
+      if (!stats || stats.mass < minMass || stats.mass <= (upright?.mass || 0) * 1.5) return label;
+      const uprightCanvas = stats.centroidRatio < 0.45 ? drawRotated(img, 3) : turned;
+      // The quarter-turned canvas is landscape, and the print path squishes
+      // landscape into the 4x6 box. When a tight PORTRAIT label rect exists
+      // inside the upright view (a rotated 4x6 photographed with junk around
+      // it), snap-crop it out — that prints upright. Otherwise the label is a
+      // portrait-shaped sideways design (Amazon mobile return labels): keep
+      // portrait and only normalize the facing direction, so every sideways
+      // print reads the same way when the sheet is turned clockwise.
+      const rect = window.LabelExtractorDetector?.suggestLabelRect?.(uprightCanvas, "");
+      if (rect && rect.height > rect.width) {
+        const snapped = await window.LabelExtractorCrop.cropCanvas(uprightCanvas, rect);
+        if (snapped?.canvas && snapped.canvas.width <= snapped.canvas.height) {
+          canvas = snapped.canvas;
+          return orientedLabelFromCanvas(label, canvas);
+        }
+      }
+      if (stats.centroidRatio >= 0.45) return label; // already faces the conventional way
+      canvas = drawRotated(img, 2);
+    }
+  } else {
+    if (!detectFlip) return label;
     const probe = sourceCanvas || drawRotated(img, 0);
     if (!detectFlip(probe)) return label;
     canvas = drawRotated(img, 2);

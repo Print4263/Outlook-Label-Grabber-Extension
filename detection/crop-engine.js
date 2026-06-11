@@ -87,7 +87,9 @@
 
     if (!bounds) {
       console.warn("[crop-engine] no content detected (blank or all-white image); returning source uncropped");
-      return canvasToLabel(sourceCanvas);
+      const label = canvasToLabel(sourceCanvas);
+      label.sourceRect = { x: 0, y: 0, width, height };
+      return label;
     }
 
     return cropCanvas(sourceCanvas, {
@@ -170,8 +172,8 @@
 
   async function cropCanvas(sourceCanvas, rect, options = {}) {
     const resolved = resolveCropOptions(options);
-    const inner = normalizeRect(rect, sourceCanvas);
-    let normalized = normalizeRect(expandRect(rect, sourceCanvas, CROP_SAFETY_PADDING_RATIO, resolved), sourceCanvas);
+    const inner = innerContentRect(sourceCanvas, rect, resolved);
+    let normalized = normalizeRect(expandRect(inner, sourceCanvas, CROP_SAFETY_PADDING_RATIO, resolved), sourceCanvas);
     if (resolved.contentExtend !== false) {
       normalized = unionFarther(normalized, extendThroughContent(sourceCanvas, inner, resolved), sourceCanvas);
     }
@@ -188,7 +190,66 @@
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, width, height);
     ctx.drawImage(sourceCanvas, x, y, width, height, 0, 0, width, height);
-    return canvasToLabel(canvas);
+    const label = canvasToLabel(canvas);
+    // Where this crop came from in the source canvas, for diagnostics and the
+    // training studio's correction scoring. Plain data; costs nothing.
+    label.sourceRect = { x, y, width, height };
+    return label;
+  }
+
+  // Detected rects routinely carry blank margins INSIDE them — the model box
+  // pads its prediction, border frames have a quiet inset, barcode-union rects
+  // are padded by ratio. Printed at 4x6 those margins scale the actual label
+  // content DOWN, so shrink the rect to the content it contains before any
+  // padding/rescue runs. Content overflowing the original rect stays safe: it
+  // is contiguous through the old edge, so extendThroughContent walks back out
+  // to it. A rect with no detectable content (blank page region) is returned
+  // unshrunk. Pass `shrinkToContent: false` to skip.
+  function innerContentRect(sourceCanvas, rect, options = {}) {
+    const inner = normalizeRect(rect, sourceCanvas);
+    if (options.shrinkToContent === false) return inner;
+    const data = pixelsFor(sourceCanvas);
+    const W = sourceCanvas.width;
+    const whiteThreshold = 246;
+    const x0 = inner.x, x1 = inner.x + inner.width;
+    const y0 = inner.y, y1 = inner.y + inner.height;
+
+    const rowHasContent = (y) => {
+      const base = y * W;
+      const need = Math.max(2, Math.floor((x1 - x0) * 0.004));
+      let c = 0;
+      for (let x = x0; x < x1; x += 1) {
+        const i = (base + x) * 4;
+        if (data[i + 3] < 16) continue;
+        if (data[i] >= whiteThreshold && data[i + 1] >= whiteThreshold && data[i + 2] >= whiteThreshold) continue;
+        if (++c >= need) return true;
+      }
+      return false;
+    };
+    const colHasContent = (x) => {
+      const need = Math.max(2, Math.floor((y1 - y0) * 0.004));
+      let c = 0;
+      for (let y = y0; y < y1; y += 1) {
+        const i = (y * W + x) * 4;
+        if (data[i + 3] < 16) continue;
+        if (data[i] >= whiteThreshold && data[i + 1] >= whiteThreshold && data[i + 2] >= whiteThreshold) continue;
+        if (++c >= need) return true;
+      }
+      return false;
+    };
+
+    let top = y0;
+    while (top < y1 - 1 && !rowHasContent(top)) top += 1;
+    let bottom = y1 - 1;
+    while (bottom > top && !rowHasContent(bottom)) bottom -= 1;
+    let left = x0;
+    while (left < x1 - 1 && !colHasContent(left)) left += 1;
+    let right = x1 - 1;
+    while (right > left && !colHasContent(right)) right -= 1;
+
+    // Nothing (or a sliver) found: trust the original rect over a degenerate shrink.
+    if (right - left < 4 || bottom - top < 4) return inner;
+    return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
   }
 
   // The safety padding in expandRect() is content-blind: it grows the detected
@@ -198,10 +259,14 @@
   // touches the detected edge with no white gap before it, while unrelated
   // content sits beyond one. So walk each side outward from the detected edge:
   // pass through blank lines and edge-contiguous content freely, but stop just
-  // short of content that lies beyond a sustained white gap. Pass
-  // `gapClamp: false` in the crop options to skip this.
+  // short of content that lies beyond a sustained white gap — and keep only a
+  // small white margin past the farthest content line, never the full blank
+  // padding band (blank padding scales the label content down at print time).
+  // Pass `gapClamp: false` in the crop options to skip this.
   const GAP_CLAMP_MIN_PIXELS = 6;
   const GAP_CLAMP_MIN_RATIO = 0.004; // of the canvas' smaller dimension
+  const GAP_CLAMP_MARGIN_PIXELS = 12;
+  const GAP_CLAMP_MARGIN_RATIO = 0.006; // of the canvas' smaller dimension
 
   function clampPaddingAtGaps(sourceCanvas, inner, outer) {
     if (outer.width <= 0 || outer.height <= 0) return outer;
@@ -211,6 +276,10 @@
     const gapMin = Math.max(
       GAP_CLAMP_MIN_PIXELS,
       Math.round(Math.min(sourceCanvas.width, sourceCanvas.height) * GAP_CLAMP_MIN_RATIO)
+    );
+    const margin = Math.max(
+      GAP_CLAMP_MARGIN_PIXELS,
+      Math.round(Math.min(sourceCanvas.width, sourceCanvas.height) * GAP_CLAMP_MARGIN_RATIO)
     );
 
     const rowHasContent = (y) => {
@@ -240,20 +309,27 @@
       return false;
     };
 
-    // Walk from just outside the detected edge toward the padded edge. On
-    // hitting a content line that follows a gap of at least gapMin blank
-    // lines, clamp the padding on the gap side of that content.
+    // Walk from just outside the detected edge toward the padded edge,
+    // tracking the farthest content line. On hitting content that follows a
+    // gap of at least gapMin blank lines, stop — that content is unrelated.
+    // Either way the final edge is the farthest related content plus a small
+    // white margin, never the whole blank padding band. Content the old
+    // behavior kept is still kept; only trailing blank lines are trimmed.
     const clampSide = (start, limit, direction, hasContent) => {
+      let last = start - direction; // the detected edge itself
+      let cap = limit;              // never move past this (gap side of unrelated content)
       let blanks = 0;
       for (let pos = start; direction > 0 ? pos <= limit : pos >= limit; pos += direction) {
         if (hasContent(pos)) {
-          if (blanks >= gapMin) return pos - direction;
+          if (blanks >= gapMin) { cap = pos - direction; break; }
+          last = pos;
           blanks = 0;
         } else {
           blanks += 1;
         }
       }
-      return limit;
+      const edge = last + direction * margin;
+      return direction > 0 ? Math.min(edge, cap) : Math.max(edge, cap);
     };
 
     const top = clampSide(inner.y - 1, outer.y, -1, rowHasContent);
@@ -271,8 +347,8 @@
   // what clampPaddingAtGaps removed on each side. Used by the training studio.
   function measureCropRect(sourceCanvas, rect, options = {}) {
     const resolved = resolveCropOptions(options);
-    const inner = normalizeRect(rect, sourceCanvas);
-    const expanded = normalizeRect(expandRect(rect, sourceCanvas, CROP_SAFETY_PADDING_RATIO, resolved), sourceCanvas);
+    const inner = innerContentRect(sourceCanvas, rect, resolved);
+    const expanded = normalizeRect(expandRect(inner, sourceCanvas, CROP_SAFETY_PADDING_RATIO, resolved), sourceCanvas);
     let outer = expanded;
     if (resolved.contentExtend !== false) {
       outer = unionFarther(outer, extendThroughContent(sourceCanvas, inner, resolved), sourceCanvas);
@@ -395,6 +471,32 @@
     return { ...rect, height: bottom - rect.y };
   }
 
+  // Mirror of clampRectBottomAboveBlockers for the rect's TOP: push it below
+  // known non-label text printed directly above the label ("Cut this label
+  // and affix…" on return sheets whose labels have no top border line, so the
+  // border detector anchors on a heading higher up and annexes instructions).
+  // Blockers in the rect's lower half are ignored, and a clamp that would gut
+  // the rect is skipped.
+  function clampRectTopBelowBlockers(rect, blockers, canvas) {
+    if (!rect || !Array.isArray(blockers) || !blockers.length || !canvas) return rect;
+    const minDim = Math.min(canvas.width || 0, canvas.height || 0);
+    const margin = Math.max(28, Math.round(minDim * CONTENT_EXTEND_GAP_RATIO) + 10);
+    let top = rect.y;
+    for (const blocker of blockers) {
+      if (!blocker || !(blocker.width > 0)) continue;
+      // No horizontal-overlap requirement: these sheets are single-column and
+      // the cut-line text often sits at the left margin while the label is
+      // centered/right. The vertical guards below do the protecting.
+      const cut = blocker.y + blocker.height + margin;
+      if (cut >= rect.y + rect.height * 0.5) continue;
+      if (cut > top) top = cut;
+    }
+    if (top <= rect.y) return rect;
+    const bottom = rect.y + rect.height;
+    if (bottom - top < rect.height * BLOCKER_KEEP_MIN_RATIO) return rect;
+    return { ...rect, y: top, height: bottom - top };
+  }
+
   // Per-edge union: take whichever rect reaches farther from centre on each side,
   // clamped to the canvas. Used to merge fixed safety padding with content rescue.
   function unionFarther(a, b, canvas) {
@@ -457,8 +559,18 @@
   const FLIP_MIN_MASS = 600;           // band transition mass needed to trust the call
 
   function detectUprightFlip(canvas) {
+    const stats = barcodeBandStats(canvas);
+    if (!stats || stats.mass < FLIP_MIN_MASS) return false;
+    return stats.centroidRatio < FLIP_CENTROID_MAX;
+  }
+
+  // Heaviest 1D-barcode band on the canvas: { mass, centroidRatio } or null.
+  // Exposed so the orientation pass can compare band strength between a label
+  // as-is and after a quarter turn — a label lying SIDEWAYS in a portrait crop
+  // scans near zero upright and strongly once turned.
+  function barcodeBandStats(canvas) {
     const { width, height } = canvas;
-    if (!width || !height) return false;
+    if (!width || !height) return null;
     const data = pixelsFor(canvas);
     const rowStep = 2;
     const colStep = 2;
@@ -513,9 +625,11 @@
     }
     if (band && (!heaviest || band.mass > heaviest.mass)) heaviest = band;
 
-    if (!heaviest || heaviest.mass < FLIP_MIN_MASS) return false;
-    const centroidRatio = heaviest.moment / heaviest.mass / total;
-    return centroidRatio < FLIP_CENTROID_MAX;
+    if (!heaviest || !heaviest.mass) return null;
+    return {
+      mass: heaviest.mass,
+      centroidRatio: heaviest.moment / heaviest.mass / total
+    };
   }
 
   // ── Faint rule removal ──────────────────────────────────────────────────
@@ -661,11 +775,15 @@
     cropCanvas,
     measureCropRect,
     clampRectBottomAboveBlockers,
+    clampRectTopBelowBlockers,
     rotateDataUrl,
     canvasToLabel,
     imageDataToCanvas,
     eraseFaintRules,
     detectUprightFlip,
+    barcodeBandStats,
+    // Band mass below this is too weak to trust for orientation decisions.
+    FLIP_MIN_MASS,
     pixelsFor
   };
 })();
