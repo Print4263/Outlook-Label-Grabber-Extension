@@ -500,7 +500,11 @@
     const parts = util.corpusPath(file).split("/").filter(Boolean);
     const skip = new Set(["labels", "label corpus", "shipping labels", "samples"]);
     let group = parts[0] || "";
-    if (skip.has(group.toLowerCase()) && parts[1]) group = parts[1];
+    // A skip-named top folder is treated as a generic wrapper only when there's a
+    // real subfolder under it (wrapper/carrier/file → group by carrier). For a FLAT
+    // folder of labels (wrapper/file, parts.length === 2) keep the wrapper name so
+    // every file lands in ONE runnable group instead of one group per file.
+    if (skip.has(group.toLowerCase()) && parts.length >= 3) group = parts[1];
     if (!group || group.toLowerCase() === "codex build") return "";
     return group;
   }
@@ -793,9 +797,13 @@
   }
 
   async function cropCanvasToLabel(canvas, rect) {
+    // A hand-drawn teaching crop must be honored EXACTLY — disable every safety
+    // growth (padding, content rescue, gap clamp) so the stored box is precisely
+    // what the user dragged, not an auto-expanded version of it.
     return window.LabelExtractorCrop.cropCanvas(canvas, percentRectToPixels(rect, canvas), {
       paddingRatio: 0, minPadding: 0, leftExtraRatio: 0, rightExtraRatio: 0,
-      topExtraRatio: 0, bottomExtraRatio: 0, replaceBottomExtraRatio: true
+      topExtraRatio: 0, bottomExtraRatio: 0, replaceBottomExtraRatio: true,
+      contentExtend: false, gapClamp: false
     });
   }
   Studio.cropCanvasToLabel = cropCanvasToLabel;
