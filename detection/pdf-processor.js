@@ -196,6 +196,26 @@
     return rects;
   }
 
+  // Amazon Online Return Center sheets print a "Return Authorization Slip"
+  // section (header + "Place this barcode…" + item barcode) meant to go INSIDE
+  // the package — never on the label. Newer variants put it on the same page as
+  // the mailing label, inside the printed cut-frame, so border/model rects wrap
+  // it in with the label. The header is a reliable single text item; export its
+  // rect so detectors can clamp their crop above it. Whole-item match only —
+  // body text mentioning the words never matches.
+  const SLIP_HEADER_PATTERN = /^return authorization slip:?\s*$/i;
+
+  function findSlipHeaderRects(items, page) {
+    const pageHeight = page.getViewport({ scale: 1 }).height;
+    const rects = [];
+    for (const item of items || []) {
+      if (!item.transform) continue;
+      if (!SLIP_HEADER_PATTERN.test(String(item.str || "").trim())) continue;
+      rects.push(textItemRect(item, pageHeight));
+    }
+    return rects;
+  }
+
   async function process(captured) {
     try {
       const pdfjsLib = await loadPdfJs();
@@ -211,12 +231,14 @@
           let foldRatio = null;
           let foldMarkerRects = [];
           let furnitureRects = [];
+          let slipHeaderRects = [];
           try {
             const textContent = await page.getTextContent();
             text = textContent.items.map((item) => item.str).join(" ");
             foldRatio = findFoldRatio(textContent.items, page, text);
             foldMarkerRects = findFoldMarkerRects(textContent.items, page);
             furnitureRects = findPrintFurnitureRects(textContent.items, page);
+            slipHeaderRects = findSlipHeaderRects(textContent.items, page);
           } catch (_) {}
           const embeddedImageInfo = await extractEmbeddedImages(page, pdfjsLib);
           const embeddedImages = embeddedImageInfo.images;
@@ -229,6 +251,7 @@
             foldRatio,
             foldMarkerRects,
             furnitureRects,
+            slipHeaderRects,
             embeddedImages,
             embeddedImageCount,
             priority: scoreLabelPage(text) + Math.min(embeddedImageCount, 3) * 0.75
@@ -289,11 +312,13 @@
     let text = "";
     let foldMarkerRects = [];
     let furnitureRects = [];
+    let slipHeaderRects = [];
     try {
       const textContent = await page.getTextContent();
       text = textContent.items.map((item) => item.str).join(" ");
       foldMarkerRects = findFoldMarkerRects(textContent.items, page);
       furnitureRects = findPrintFurnitureRects(textContent.items, page);
+      slipHeaderRects = findSlipHeaderRects(textContent.items, page);
     } catch (_) {}
     return renderPageEntry({
       pageIndex: idx,
@@ -303,12 +328,13 @@
       embeddedImageCount: 0,
       foldRatio: null,
       foldMarkerRects,
-      furnitureRects
+      furnitureRects,
+      slipHeaderRects
     }, pdf.numPages);
   }
 
   async function renderPageEntry(entry, pageCount) {
-    const { pageIndex, page, text, embeddedImages, embeddedImageCount, foldRatio, foldMarkerRects, furnitureRects } = entry;
+    const { pageIndex, page, text, embeddedImages, embeddedImageCount, foldRatio, foldMarkerRects, furnitureRects, slipHeaderRects } = entry;
     const naturalViewport = page.getViewport({ scale: 1 });
     const renderScale = Math.min(4, Math.max(3, 1200 / naturalViewport.width));
     const viewport = page.getViewport({ scale: renderScale });
@@ -359,7 +385,15 @@
       text,
       foldRatio: Number.isFinite(foldRatio) ? foldRatio : null,
       embeddedImages: Array.isArray(embeddedImages) ? embeddedImages : [],
-      embeddedImageCount: Number(embeddedImageCount || 0)
+      embeddedImageCount: Number(embeddedImageCount || 0),
+      // Return-slip header rects in CANVAS coordinates, ready for detectors to
+      // clamp crop rects against (see clampRectBottomAboveBlockers).
+      slipRects: (Array.isArray(slipHeaderRects) ? slipHeaderRects : []).map((rect) => ({
+        x: rect.x * renderScale,
+        y: rect.y * renderScale,
+        width: rect.width * renderScale,
+        height: rect.height * renderScale
+      }))
     };
   }
 

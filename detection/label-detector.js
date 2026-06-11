@@ -177,7 +177,35 @@
     const ranked = dedupeDetections(candidates)
       .filter((candidate) => !isLikelyTextInstructionPage(findPage(candidate.pages || pages, candidate.pageIndex), candidate.reason))
       .sort(compareDetections);
-    return promoteModelOverBorder(ranked);
+    return promoteModelOverBorder(promoteDetectionOverTextGuess(ranked));
+  }
+
+  // Text-keyword fallbacks score high on pages FULL of carrier wording — which
+  // is exactly what a return-instructions page is — so a no-rect "keywords"
+  // candidate can outrank the actually-detected label (its labelTextScore +
+  // carrier preference outweigh the border's confidence). A text guess without
+  // geometry should never beat a confident detection that has a real crop rect:
+  // promote the best rect-backed border/model candidate over it.
+  const TEXT_GUESS_REASONS = ["keywords", "embedded-label-page"];
+  const TEXT_GUESS_MIN_BORDER_CONFIDENCE = 0.85;
+
+  function promoteDetectionOverTextGuess(ranked) {
+    const top = ranked[0];
+    if (!TEXT_GUESS_REASONS.includes(top?.reason) || top?.cropRect) return ranked;
+    const real = ranked.find((candidate) => candidate?.cropRect && candidate.label && (
+      (MODEL_BORDER_REASONS.includes(candidate.reason)
+        && Number(candidate.confidence || 0) >= TEXT_GUESS_MIN_BORDER_CONFIDENCE)
+      || (candidate.reason === "trained-model"
+        && Number(candidate.confidence || 0) >= MODEL_OVER_BORDER_MIN_CONFIDENCE)
+    ));
+    if (!real) return ranked;
+    trace("detection-over-text-guess", {
+      demotedReason: top.reason,
+      promotedReason: real.reason,
+      promotedConfidence: real.confidence,
+      note: "no-rect text-keyword candidate outranked a confident rect-backed detection; detection promoted"
+    });
+    return [real, ...ranked.filter((candidate) => candidate !== real)];
   }
 
   // The border detectors (solid/dashed) lock onto the printed frame, which on
@@ -422,6 +450,16 @@
     return window.LabelExtractorCrop.cropCanvas(page.canvas, rect, { ...cropOptionsForPage(page), ...options });
   }
 
+  // Clamp a detection rect above the page's "Return Authorization Slip" header
+  // (slipRects, exported by pdf-processor in canvas coords). Newer Online Return
+  // Center sheets print the slip on the SAME page as the label, inside the same
+  // cut-frame, so border/model rects wrap it in with the label. No-op on pages
+  // without slip text.
+  function clampRectAboveSlip(rect, page) {
+    if (!rect || !page?.slipRects?.length) return rect;
+    return window.LabelExtractorCrop.clampRectBottomAboveBlockers(rect, page.slipRects, page.canvas);
+  }
+
   function autoCropPageCanvas(page, padding = 6) {
     return window.LabelExtractorCrop.autoCropCanvas(page.canvas, padding, cropOptionsForPage(page));
   }
@@ -619,7 +657,10 @@
       const borderRect = trimKnownDashedBorderForm(detectDashedBorder(page.canvas), page, knownOnlineReturnForm);
       if (!borderRect) continue;
       // Known online-return forms get their own precise trimming; leave them be.
-      const rect = knownOnlineReturnForm ? borderRect : expandRectToClippedBarcodes(borderRect, page.canvas);
+      const rect = clampRectAboveSlip(
+        knownOnlineReturnForm ? borderRect : expandRectToClippedBarcodes(borderRect, page.canvas),
+        page
+      );
       if (!knownOnlineReturnForm) {
         const fullPage = await fullPageLabelIfShaped(page, pages, rect);
         if (fullPage) { detections.push(fullPage); continue; }
@@ -688,7 +729,7 @@
     for (const page of pages) {
       const borderRect = detectSolidLabelBorder(page.canvas);
       if (!borderRect) continue;
-      const rect = expandRectToClippedBarcodes(borderRect, page.canvas);
+      const rect = clampRectAboveSlip(expandRectToClippedBarcodes(borderRect, page.canvas), page);
 
       const fullPage = await fullPageLabelIfShaped(page, pages, rect);
       if (fullPage) { detections.push(fullPage); continue; }
@@ -1153,7 +1194,7 @@
       if (!looksLikeEmbeddedReturnPage) continue;
 
       const rect = regions.length >= 2
-        ? expandRect(unionRects(regions), page.canvas, 0.65)
+        ? clampRectAboveSlip(expandRect(unionRects(regions), page.canvas, 0.65), page)
         : null;
       const label = rect
         ? await cropPageCanvas(page, rect)

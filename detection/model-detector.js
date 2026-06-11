@@ -79,6 +79,13 @@
     });
     if (!accepted) return null;
 
+    // Keep the page's "Return Authorization Slip" section (slipRects, from
+    // pdf-processor) out of the model's box — the model happily includes it
+    // when the sheet prints the slip inside the same cut-frame as the label.
+    const rect = best.page.slipRects?.length
+      ? window.LabelExtractorCrop.clampRectBottomAboveBlockers(best.prediction.rect, best.page.slipRects, best.page.canvas)
+      : best.prediction.rect;
+
     return {
       confidence: Math.max(best.prediction.confidence, best.prediction.acceptedConfidence),
       reason: "trained-model",
@@ -88,8 +95,8 @@
       sourceKind: best.page.sourceKind || best.page.type || "",
       sourceWidth: best.page.width || best.page.canvas.width,
       sourceHeight: best.page.height || best.page.canvas.height,
-      cropRect: best.prediction.rect,
-      label: await window.LabelExtractorCrop.cropCanvas(best.page.canvas, best.prediction.rect)
+      cropRect: rect,
+      label: await window.LabelExtractorCrop.cropCanvas(best.page.canvas, rect)
     };
   }
 

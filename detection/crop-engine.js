@@ -349,6 +349,34 @@
     return { x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
   }
 
+  // Pull a detection rect's bottom up above known non-label "blocker" regions —
+  // e.g. the "Return Authorization Slip" header on Amazon Online Return Center
+  // sheets, whose section is printed inside the same cut-frame as the label and
+  // therefore lands inside border/model rects. The clamp margin is sized to beat
+  // the content-extend bridge gap, so the safety padding can never walk back
+  // across it into the excluded section. Blockers in the rect's upper half are
+  // ignored (a slip ABOVE the label means this rect isn't the label/slip layout
+  // this clamp understands), and a clamp that would gut the rect is skipped.
+  const BLOCKER_KEEP_MIN_RATIO = 0.45;
+
+  function clampRectBottomAboveBlockers(rect, blockers, canvas) {
+    if (!rect || !Array.isArray(blockers) || !blockers.length || !canvas) return rect;
+    const minDim = Math.min(canvas.width || 0, canvas.height || 0);
+    const margin = Math.max(28, Math.round(minDim * CONTENT_EXTEND_GAP_RATIO) + 10);
+    let bottom = rect.y + rect.height;
+    for (const blocker of blockers) {
+      if (!blocker || !(blocker.width > 0)) continue;
+      const overlapX = Math.min(rect.x + rect.width, blocker.x + blocker.width) - Math.max(rect.x, blocker.x);
+      if (overlapX <= 0) continue;
+      const cut = blocker.y - margin;
+      if (cut <= rect.y + rect.height * 0.5) continue;
+      if (cut < bottom) bottom = cut;
+    }
+    if (bottom >= rect.y + rect.height) return rect;
+    if (bottom - rect.y < rect.height * BLOCKER_KEEP_MIN_RATIO) return rect;
+    return { ...rect, height: bottom - rect.y };
+  }
+
   // Per-edge union: take whichever rect reaches farther from centre on each side,
   // clamped to the canvas. Used to merge fixed safety padding with content rescue.
   function unionFarther(a, b, canvas) {
@@ -601,6 +629,7 @@
     autoCropCanvas,
     cropCanvas,
     measureCropRect,
+    clampRectBottomAboveBlockers,
     rotateDataUrl,
     canvasToLabel,
     imageDataToCanvas,
