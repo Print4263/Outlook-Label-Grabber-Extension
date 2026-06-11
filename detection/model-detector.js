@@ -48,7 +48,11 @@
     return ortLoadPromise;
   }
 
-  async function detectPages(pages) {
+  // pageIndexes (optional Set) restricts inference to those pages — the caller
+  // knows which pages the best prediction could matter on, and each skipped
+  // page saves a full ~0.7 s single-threaded inference. Null/undefined keeps
+  // the scan-everything behavior.
+  async function detectPages(pages, pageIndexes) {
     if (!pages || !pages.length) return null;
     const ort = await ensureOrt().catch(() => null);
     if (!ort) return null;
@@ -56,6 +60,7 @@
     let best = null;
     for (const page of pages) {
       if (!page || !page.canvas || page.isCropOption) continue;
+      if (pageIndexes && !pageIndexes.has(Number(page.pageIndex || 0))) continue;
       const prediction = await detectCanvas(page.canvas);
       if (!prediction) continue;
       if (!best || prediction.score > best.prediction.score) {

@@ -119,9 +119,10 @@
       return [strongEarly];
     }
 
-    const modelHit = await trainedModelDetection(pages);
+    const modelScope = modelInferencePageScope(candidates, pages);
+    const modelHit = modelScope.skip ? null : await trainedModelDetection(pages, modelScope.pageIndexes);
     if (modelHit) candidates.push(modelHit);
-    stage("trained-model", { available: Boolean(window.LabelExtractorModelDetector) });
+    stage("trained-model", { available: Boolean(window.LabelExtractorModelDetector), scope: modelScope.note });
 
     const fashionNovaHit = await fashionNovaLowerBarcodeDetection(pages);
     if (fashionNovaHit) candidates.push(fashionNovaHit);
@@ -930,14 +931,88 @@
     });
   }
 
-  async function trainedModelDetection(pages) {
+  async function trainedModelDetection(pages, pageIndexes) {
     if (!window.LabelExtractorModelDetector) return null;
     try {
-      return withCarrierMetadata(await window.LabelExtractorModelDetector.detectPages(pages), pages);
+      return withCarrierMetadata(await window.LabelExtractorModelDetector.detectPages(pages, pageIndexes), pages);
     } catch (error) {
       console.warn("[Label Extractor] Trained model detection failed", error);
       return null;
     }
+  }
+
+  // ONNX inference costs ~0.7 s per page, and detectPages keeps only its single
+  // best prediction for the whole document — so inferring pages that prediction
+  // can't come from (or can't matter on) is pure wall-time waste. The model's
+  // runtime jobs are (a) refine a page some detector already flagged
+  // (promoteModelOverBorder / ranking) and (b) find the label when no detector
+  // saw anything. So:
+  //  - Pages with any rect-backed candidate are inferred: if a detector saw the
+  //    label, its page is in this set, so the model's best prediction is the
+  //    same one it would have picked scanning every page.
+  //  - Pages that look like embedded-label pages (same signal
+  //    embeddedLabelPageFallbacks uses: embedded images, 2+ barcode regions, or
+  //    return-label wording) are inferred too: a borderless label image gives
+  //    the heuristics no rect, but the model can still box it (Online Return
+  //    Center 5's page-1 USPS label lives here). findBarcodeRegions is
+  //    memoized, so asking early costs nothing — the fallback stage re-asks the
+  //    same canvas later anyway.
+  //  - N-up duplicate sheets (the same border rect on 3+ pages — e.g. a 6-up
+  //    twin-label PDF) skip the model entirely: per-page borders fill the
+  //    variant list above the model's single lower-confidence candidate, and
+  //    inferring only some pages could flip same-page promotion on whichever
+  //    page happened to be scanned — changing today's verified winner.
+  //  - No candidates at all keeps the old behavior (every page): the model is
+  //    the only detector left.
+  const NUP_MIN_DUPLICATE_PAGES = 3;
+  const NUP_RECT_TOLERANCE_RATIO = 0.02;
+
+  function modelInferencePageScope(candidates, pages) {
+    const rectBacked = candidates.filter((candidate) => candidate?.cropRect);
+    if (!rectBacked.length) return { pageIndexes: null, note: "all pages (no rect-backed candidates)" };
+    if (isNUpDuplicateSheet(rectBacked, pages)) {
+      trace("model-scope", { skip: true, note: "n-up duplicate sheet; model skipped" });
+      return { skip: true, note: "skipped (n-up duplicate sheet)" };
+    }
+    const pageIndexes = new Set(rectBacked.map((candidate) => Number(candidate.pageIndex || 0)));
+    for (const page of pages) {
+      if (!page?.canvas || page.isCropOption) continue;
+      const index = Number(page.pageIndex || 0);
+      if (pageIndexes.has(index)) continue;
+      if (looksLikeEmbeddedLabelPage(page)) pageIndexes.add(index);
+    }
+    return { pageIndexes, note: `pages ${[...pageIndexes].sort((a, b) => a - b).join(",")} of ${pages.length}` };
+  }
+
+  function looksLikeEmbeddedLabelPage(page) {
+    if (Number(page.embeddedImageCount || 0) > 0) return true;
+    const text = String(page.text || "").toUpperCase();
+    if (/RETURN AUTHORIZATION SLIP|PLACE THIS BARCODE|RETURN MAILING LABEL/.test(text)) return true;
+    return findBarcodeRegions(page.canvas).length >= 2;
+  }
+
+  function isNUpDuplicateSheet(rectBacked, pages) {
+    if (pages.length < NUP_MIN_DUPLICATE_PAGES) return false;
+    const groups = new Map();
+    for (const candidate of rectBacked) {
+      if (!MODEL_BORDER_REASONS.includes(candidate.reason)) continue;
+      const rect = candidate.cropRect;
+      const page = findPage(candidate.pages || pages, candidate.pageIndex);
+      const dim = Math.max(1, Math.max(page?.canvas?.width || 0, page?.canvas?.height || 0));
+      const tolerance = Math.max(8, dim * NUP_RECT_TOLERANCE_RATIO);
+      const key = [
+        candidate.reason,
+        Math.round(rect.x / tolerance),
+        Math.round(rect.y / tolerance),
+        Math.round(rect.width / tolerance),
+        Math.round(rect.height / tolerance)
+      ].join(":");
+      const seenPages = groups.get(key) || new Set();
+      seenPages.add(Number(candidate.pageIndex || 0));
+      groups.set(key, seenPages);
+      if (seenPages.size >= NUP_MIN_DUPLICATE_PAGES) return true;
+    }
+    return false;
   }
 
   function withCarrierMetadata(result, pages) {

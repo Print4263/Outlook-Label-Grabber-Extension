@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -7,23 +7,23 @@
 </head>
 <body>
 <h1>Perf / regression check</h1>
-<div id="status">scripts loading…</div>
+<div id="status">scripts loading...</div>
 
 <script src="../lib/pdf.min.js"></script>
 <script src="../lib/ort.min.js"></script>
 <!-- Bump v= when comparing builds: python http.server + browser cache otherwise
      serve stale detection scripts after an edit. -->
-<script src="../detection/crop-engine.js?v=2"></script>
-<script src="../detection/model-detector.js?v=2"></script>
-<script src="../detection/label-detector.js?v=2"></script>
-<script src="../detection/pdf-processor.js?v=2"></script>
-<script src="../detection/png-processor.js?v=2"></script>
-<script src="../config.js?v=2"></script>
+<script src="../detection/crop-engine.js?v=3"></script>
+<script src="../detection/model-detector.js?v=3"></script>
+<script src="../detection/label-detector.js?v=3"></script>
+<script src="../detection/pdf-processor.js?v=3"></script>
+<script src="../detection/png-processor.js?v=3"></script>
+<script src="../config.js?v=3"></script>
 <script>
 window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
 
 // Runs each PDF through the real pipeline (LabelExtractorPDF.process +
-// detectPdfCandidates — same calls runLocalDetector makes) and records the
+// detectPdfCandidates -- same calls runLocalDetector makes) and records the
 // ranked candidates' reason/confidence/rect plus wall time. Results land on
 // window.__batch for eval-based collection; used to diff detection behavior
 // and timing before/after performance changes. Dev-only, not shipped.
@@ -36,15 +36,43 @@ window.runBatch = async function (names) {
   for (const name of names) {
     status.textContent = "running " + name;
     const entry = { name };
+    // Per-stage wall time via the studio trace sink: each cascade "stage" event
+    // closes the window opened by the previous one, so deltas = stage durations.
+    const stages = {};
+    let lastT = 0;
+    let modelPrediction = null;
+    const sink = (e) => {
+      const now = performance.now();
+      if (e.stage === "model-prediction") {
+        modelPrediction = { found: e.found, accepted: e.accepted, page: e.pageIndex, conf: e.rawConfidence, score: e.score };
+        return;
+      }
+      if (e.stage === "run-start") { lastT = now; return; }
+      if (e.stage === "stage" || e.stage === "early-exit") {
+        const key = e.detector || e.reason || "?";
+        stages[key] = Math.round((stages[key] || 0) + (now - lastT));
+        lastT = now;
+      }
+    };
     try {
       const buf = await (await fetch("diag-labels/" + encodeURIComponent(name))).arrayBuffer();
       const t0 = performance.now();
       const processed = await window.LabelExtractorPDF.process({ buffer: buf, type: "application/pdf", name });
+      const tProcessed = performance.now();
+      window.LabelExtractorDetector.setTraceSink?.(sink);
+      window.LabelExtractorModelDetector.setTraceSink?.(sink);
       let candidates = Array.isArray(processed) ? processed
         : processed?.pages ? await window.LabelExtractorDetector.detectPdfCandidates(processed.pages)
         : [processed];
+      window.LabelExtractorDetector.clearTrace?.();
+      window.LabelExtractorModelDetector.clearTrace?.();
       entry.ms = Math.round(performance.now() - t0);
-      entry.candidates = (candidates || []).filter(Boolean).slice(0, 8).map((c) => ({
+      entry.processMs = Math.round(tProcessed - t0);
+      entry.detectMs = Math.round(performance.now() - tProcessed);
+      entry.stages = stages;
+      entry.modelPrediction = modelPrediction;
+      entry.pages = processed?.pages?.length ?? null;
+      entry.candidates = (candidates || []).filter(Boolean).slice(0, 20).map((c) => ({
         reason: c.reason || "",
         conf: +Number(c.confidence || 0).toFixed(3),
         page: Number(c.pageIndex || 0),
@@ -54,6 +82,8 @@ window.runBatch = async function (names) {
           : null
       }));
     } catch (error) {
+      window.LabelExtractorDetector?.clearTrace?.();
+      window.LabelExtractorModelDetector?.clearTrace?.();
       entry.error = String(error?.message || error);
     }
     window.__batch.results.push(entry);
@@ -62,7 +92,8 @@ window.runBatch = async function (names) {
   status.textContent = "done (" + names.length + " files)";
   return window.__batch.results.length;
 };
-document.getElementById("status").textContent = "ready — call runBatch([names])";
+document.getElementById("status").textContent = "ready -- call runBatch([names])";
 </script>
 </body>
 </html>
+
