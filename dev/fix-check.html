@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fix-report scoring check</title>
+<style>body { font-family: "Segoe UI", Arial, sans-serif; margin: 16px; }</style>
+</head>
+<body>
+<h1>Fix-report scoring check</h1>
+<div id="status">scripts loading...</div>
+
+<script src="../lib/pdf.min.js"></script>
+<script src="../lib/ort.min.js"></script>
+<!-- Bump v= when comparing builds: python http.server + browser cache otherwise
+     serve stale detection scripts after an edit. -->
+<script src="../detection/crop-engine.js?v=17"></script>
+<script src="../detection/model-detector.js?v=17"></script>
+<script src="../detection/label-detector.js?v=17"></script>
+<script src="../detection/pdf-processor.js?v=17"></script>
+<script src="../detection/png-processor.js?v=17"></script>
+<script src="../config.js?v=17"></script>
+<script>
+window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
+
+// Scores the pipeline's top candidate against the user's corrected crops from
+// the training-studio fix report (dev/fix-report-current.json). For each
+// corrected file: run the real pipeline (same calls the studio/sidepanel make),
+// locate the top candidate's final output rect in the same coordinate space the
+// correction was drawn in (source page, or the label itself for embedded-image
+// candidates), and compute IoU / coverage / excess. Dev-only, not shipped.
+window.__batch = { done: false, results: [] };
+
+function iou(a, b) {
+  const ix = Math.max(a.x, b.x);
+  const iy = Math.max(a.y, b.y);
+  const ix2 = Math.min(a.x + a.width, b.x + b.width);
+  const iy2 = Math.min(a.y + a.height, b.y + b.height);
+  const inter = Math.max(0, ix2 - ix) * Math.max(0, iy2 - iy);
+  const union = a.width * a.height + b.width * b.height - inter;
+  return union > 0 ? inter / union : 0;
+}
+
+function coverage(target, out) { // how much of the corrected label the output keeps
+  const ix = Math.max(target.x, out.x);
+  const iy = Math.max(target.y, out.y);
+  const ix2 = Math.min(target.x + target.width, out.x + out.width);
+  const iy2 = Math.min(target.y + target.height, out.y + out.height);
+  const inter = Math.max(0, ix2 - ix) * Math.max(0, iy2 - iy);
+  return inter / Math.max(1, target.width * target.height);
+}
+
+function plainRect(rect) {
+  if (!rect) return null;
+  return [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)];
+}
+
+async function detectFile(name) {
+  const isPdf = /\.pdf$/i.test(name);
+  const response = await fetch("fix-labels/" + encodeURIComponent(name));
+  if (!response.ok) throw new Error("fetch " + response.status);
+  if (isPdf) {
+    const processed = await window.LabelExtractorPDF.process({
+      buffer: await response.arrayBuffer(),
+      type: "application/pdf",
+      name
+    });
+    if (Array.isArray(processed)) return { candidates: processed, pages: null };
+    if (processed?.pages) {
+      const candidates = await window.LabelExtractorDetector.detectPdfCandidates(processed.pages);
+      return { candidates: candidates.length ? candidates : [processed], pages: processed.pages };
+    }
+    return { candidates: [processed], pages: null };
+  }
+  const blob = await response.blob();
+  const page = await window.LabelExtractorPNG.process({ blob, type: blob.type, name }, 0);
+  const candidates = await window.LabelExtractorDetector.detectAllPngCandidates([page]);
+  return { candidates, pages: [page] };
+}
+
+// The correction was drawn either on the source page canvas or (when no page
+// was available, e.g. embedded-image labels) on the label output itself.
+// Returns the candidate's final output rect in that same space, or null.
+function outputRectInCorrectionSpace(candidate, pages, corrected) {
+  const sw = Number(corrected.sourceWidth || 0);
+  const sh = Number(corrected.sourceHeight || 0);
+  const page = (pages || []).find((p) => p.pageIndex === candidate.pageIndex) || (pages || [])[0];
+  if (page?.canvas && page.canvas.width === sw && page.canvas.height === sh) {
+    const rect = candidate.label?.sourceRect;
+    if (rect) return { rect, space: "page" };
+    // No recorded rect (embedded/rotated label): if the label IS the page, full page.
+    if (candidate.label && candidate.label.width === sw && candidate.label.height === sh) {
+      return { rect: { x: 0, y: 0, width: sw, height: sh }, space: "page-full" };
+    }
+    return null;
+  }
+  if (candidate.label && candidate.label.width === sw && candidate.label.height === sh) {
+    return { rect: { x: 0, y: 0, width: sw, height: sh }, space: "label" };
+  }
+  return null;
+}
+
+window.runBatch = async function (names) {
+  window.__batch = { done: false, results: [] };
+  const status = document.getElementById("status");
+  const report = await (await fetch("fix-report-current.json")).json();
+  const corrections = report.corrections || {};
+  const keys = names && names.length
+    ? names.map((n) => "LABELS/" + n)
+    : Object.keys(corrections);
+  try { await window.LabelExtractorModelDetector.warmUp(); } catch (_) {}
+
+  for (const key of keys) {
+    const rec = corrections[key];
+    const name = rec?.fileName || key.replace(/^LABELS\//, "");
+    status.textContent = "running " + name;
+    const entry = { name, category: rec?.category || "", detector: rec?.detector || "" };
+    let modelPrediction = null;
+    const sink = (e) => {
+      if (e.stage === "model-prediction") {
+        modelPrediction = {
+          found: e.found, accepted: e.accepted, page: e.pageIndex,
+          conf: e.rawConfidence == null ? null : +Number(e.rawConfidence).toFixed(3),
+          rect: plainRect(e.rect)
+        };
+      }
+    };
+    try {
+      window.LabelExtractorDetector.setTraceSink?.(sink);
+      window.LabelExtractorModelDetector.setTraceSink?.(sink);
+      const t0 = performance.now();
+      const { candidates, pages } = await detectFile(name);
+      entry.ms = Math.round(performance.now() - t0);
+      window.LabelExtractorDetector.clearTrace?.();
+      window.LabelExtractorModelDetector.clearTrace?.();
+      entry.modelPrediction = modelPrediction;
+      const list = (candidates || []).filter(Boolean);
+      entry.candidates = list.slice(0, 10).map((c) => ({
+        reason: c.reason || "",
+        conf: +Number(c.confidence || 0).toFixed(3),
+        page: Number(c.pageIndex || 0),
+        rect: plainRect(c.cropRect),
+        out: plainRect(c.label?.sourceRect),
+        size: c.label ? [c.label.width, c.label.height] : null
+      }));
+      const top = list[0];
+      if (top && rec?.corrected?.pixelRect) {
+        const target = rec.corrected.pixelRect;
+        const out = outputRectInCorrectionSpace(top, pages, rec.corrected);
+        if (out) {
+          entry.space = out.space;
+          entry.outRect = plainRect(out.rect);
+          entry.target = plainRect(target);
+          entry.iou = +iou(out.rect, target).toFixed(3);
+          entry.cover = +coverage(target, out.rect).toFixed(3);
+          entry.excess = +(1 - (target.width * target.height) /
+            Math.max(1, out.rect.width * out.rect.height)).toFixed(3);
+        } else {
+          entry.space = "mismatch";
+          entry.labelSize = top.label ? [top.label.width, top.label.height] : null;
+          entry.correctedSpace = [rec.corrected.sourceWidth, rec.corrected.sourceHeight];
+        }
+        // Best achievable within the list (same correction space): wrong-variant signal.
+        let best = null;
+        list.slice(0, 10).forEach((c, i) => {
+          const o = outputRectInCorrectionSpace(c, pages, rec.corrected);
+          if (!o) return;
+          const v = iou(o.rect, target);
+          if (!best || v > best.iou) best = { index: i, reason: c.reason, iou: +v.toFixed(3) };
+        });
+        entry.bestInList = best;
+      }
+    } catch (error) {
+      window.LabelExtractorDetector?.clearTrace?.();
+      window.LabelExtractorModelDetector?.clearTrace?.();
+      entry.error = String(error?.message || error);
+    }
+    window.__batch.results.push(entry);
+  }
+  window.__batch.done = true;
+  status.textContent = "done (" + window.__batch.results.length + " files)";
+  return window.__batch.results.length;
+};
+document.getElementById("status").textContent = "ready -- call runBatch() for all corrected files";
+</script>
+</body>
+</html>

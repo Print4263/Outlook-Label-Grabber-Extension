@@ -167,17 +167,31 @@
 
   <script src="../lib/pdf.min.js"></script>
   <script src="../lib/ort.min.js"></script>
-  <script src="../detection/crop-engine.js"></script>
-  <script src="../detection/model-detector.js"></script>
-  <script src="../detection/label-detector.js"></script>
-  <script src="../detection/pdf-processor.js"></script>
-  <script src="../detection/png-processor.js"></script>
-  <script src="../config.js"></script>
-  <script src="studio/core.js"></script>
-  <script src="studio/stats.js"></script>
-  <script src="studio/log-panel.js"></script>
-  <script src="studio/preview.js"></script>
-  <script src="studio/rules.js"></script>
-  <script src="studio/corrections.js"></script>
+  <script>
+    // Served over plain http (python http.server), the browser happily keeps
+    // STALE cached copies of the detection scripts after an edit — a studio
+    // batch can silently grade old code. Cache-bust every page load; these are
+    // small local files, so the refetch costs nothing. document.write keeps
+    // the synchronous load order the studio modules depend on.
+    (function () {
+      const v = Date.now();
+      [
+        "../detection/crop-engine.js",
+        "../detection/model-detector.js",
+        "../detection/label-detector.js",
+        "../detection/pdf-processor.js",
+        "../detection/png-processor.js",
+        "../config.js",
+        "studio/core.js",
+        "studio/stats.js",
+        "studio/log-panel.js",
+        "studio/preview.js",
+        "studio/rules.js",
+        "studio/corrections.js"
+      ].forEach((src) => {
+        document.write('<script src="' + src + "?v=" + v + '"><\/script>');
+      });
+    })();
+  </script>
 </body>
 </html>

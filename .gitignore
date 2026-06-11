@@ -20,3 +20,8 @@ fix-report-*.md
 label-rules-*.json
 label-rules-spec-*.md
 label-studio-state-*.json
+
+# Fix-report corpora (PII)
+dev/fix-labels/
+dev/fix-report-current.json
+dev/fix-labels-list.json
