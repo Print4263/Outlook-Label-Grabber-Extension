@@ -1,62 +1,111 @@
-# Domain Expansion: Print Label (Local)
+# Outlook Label Grabber — Print4263
 
-Microsoft Edge MV3 extension for extracting and printing shipping labels. Runs entirely on-device with no backend server and no API key.
+Chrome/Edge MV3 extension for grabbing and printing shipping labels from Outlook at The UPS Store #4263. Runs entirely on-device — no backend server, no API key, no internet required for detection.
 
 ## What It Does
 
-- Adds a large Download Label button for the open Outlook email.
-- Retries briefly when Outlook is still rendering an email's attachment chip.
-- Keeps Recent downloads as a backup when staff uses Outlook's normal download button.
-- Detects shipping labels from PDF, PNG, JPG, JPEG, GIF, WEBP, HEIC, and HEIF files using local detection (HEIC/HEIF are converted to PNG automatically).
-- Detects labels even when they are placed sideways or rotated 90° in the source PDF (common on UPS and return labels).
-- Detects labels embedded as a full-page image and single 4x6 label pages, and expands border crops outward to include a barcode or data-matrix that sits at the label's edge (so the matrix isn't clipped).
-- Auto-orients results upright so sideways labels print correctly as 4x6 without manual rotation.
-- Shows label results with rotate, crop, print, and expand actions.
-- **The on-screen preview matches the printed output** — surrounding white is trimmed and the label is filled to the 4x6 — so staff can trust the preview without manually cropping.
-- **Expand** loads the full source page so you can crop to the label yourself when auto-detection comes up short.
-- Prints in 4x6 label mode, trimming surrounding white and filling the label to the sheet.
-- **Display size** control (collapsible, at the bottom) scales the whole panel for low-resolution register screens. It auto-fits to the window on first open and remembers the setting per device.
-- Includes Staff mode by default and Lab mode for debug details.
+- Adds a **Download Label** button to the open Outlook email; retries briefly when Outlook is still rendering the attachment chip.
+- Falls back to **Recent downloads** when staff uses Outlook's own download button.
+- Detects shipping labels from PDF, PNG, JPG, JPEG, GIF, WEBP, HEIC, and HEIF — HEIC/HEIF auto-convert to PNG.
+- Handles phone screenshots and low-resolution images by upscaling to ~3000 px before analysis — hairline borders and dash patterns that would otherwise be invisible at native resolution are reliably detected.
+- **Ranks results intelligently:** 4×6-shaped crops surface first; pure packing-slip, invoice, and order-summary pages are pushed to the bottom so the label is always the top pick.
+- Detects labels placed sideways or rotated 90° and auto-orients them upright for correct 4×6 printing.
+- Handles labels embedded as full-page images, label pages with border detectors, and the ONNX YOLO model as a refinement layer.
+- Expands detected crop boxes outward to include barcodes and data-matrix codes that sit at the label's edge — nothing gets clipped.
+- Crops hug the actual label content: blank whitespace bands are trimmed to a small margin, so the printed label fills the sheet without dead space.
+- **Download Label keeps the open email open** — the reading view is restored after the download click; it no longer navigates back to the inbox.
+- Shows results with **Rotate**, **Crop**, **Print**, and **Expand** actions.
+- The on-screen 4×6 preview matches printed output — white is trimmed and the label fills the sheet — so staff can trust the preview without manual cropping.
+- **Expand** loads the full source page for manual cropping when auto-detection comes up short.
+- **Display size** control (collapsible, at the bottom) scales the whole panel for low-resolution register screens; auto-fits on first open and saves per device.
 
 ## Setup
 
-1. Open Edge and go to `edge://extensions`.
-2. Enable Developer mode.
-3. Click **Load unpacked**.
-4. Select this extension folder.
-5. Enable **Allow access to file URLs** in the extension details page.
-6. Open Outlook in Edge or the Outlook PWA.
+1. Open Chrome (or Edge) and go to `chrome://extensions` (or `edge://extensions`).
+2. Enable **Developer mode**.
+3. Click **Load unpacked** and select this folder.
+4. Enable **Allow access to file URLs** in the extension's details page.
+5. Open Outlook in the same browser.
 
-> After updating the code, reload the extension at `edge://extensions`, then **close and reopen the panel/popout** — an already-open popout keeps running the old code until it is reopened.
+> After updating the code, reload the extension, then **close and reopen the panel/popout** — an open popout keeps running the old code until reopened.
 
 ## Workflow
 
 1. Open the label email in Outlook.
-2. Click **Download Label** in the extension.
-3. If that does not work, use Outlook's own download button.
-4. The side panel detects the new download. Click **Use** if needed.
+2. Click **Download Label** in the extension panel.
+3. If the button doesn't work, use Outlook's own download button — the panel picks up the file automatically.
+4. Click **Use** on the result, or the top candidate loads automatically.
 5. Review the label. Use **Crop**, **Rotate**, or **Expand** if needed.
 6. Click **Print**.
-7. Click **Clear** before the next customer's label.
+7. Click **Clear** before the next customer.
 
-## Display size (low-resolution screens)
+## Display size
 
-If the panel looks clipped or too large on a register screen (for example a 720p display), open the **Display size** section at the bottom:
+On low-resolution register screens (e.g. 720p), open **Display size** at the bottom of the panel:
 
-- Drag the slider or use **−/+** to scale the whole panel.
+- Drag the slider or use **−/+** to scale the panel.
 - Click **Fit** to auto-size it to the current window.
 
-The chosen size is saved on that device only and is applied before the panel paints, so each register can have its own setting without affecting other PCs.
+The setting is saved per device only.
 
 ## Project structure
 
-The UI runs from `sidepanel.html`, which loads a lean core (`sidepanel.js` — state, init, event wiring, rendering, and the extraction/print orchestration) plus four focused, plain-script modules under `app/`: `app/print.js` (monochrome conversion + print HTML + the print window flow), `app/downloads.js` (the Recent-downloads list, intake, and Use/Show/Clear/preview actions), `app/crop.js` (the crop editor plus image transforms like auto-orient and rotate-to-portrait), and `app/detect.js` (turning local-detector output into ranked label candidates and fallbacks). These are classic (non-module) scripts that share global scope, so they behave exactly as the original single file. The on-device detection engine lives in `detection/` (`label-detector.js`, `pdf-processor.js`, `png-processor.js`, `crop-engine.js`, `model-detector.js`), third-party libraries in `lib/` (pdf.js, ONNX Runtime, heic2any), the ONNX model in `models/`, the service worker in `background.js`, and the Outlook/page content scripts in `outlook-reader.js` and `page-label-drag.js`.
+| Path | Purpose |
+|---|---|
+| `sidepanel.html` / `sidepanel.js` | Main UI — state, rendering, print/extract orchestration |
+| `app/print.js` | Monochrome conversion, print HTML, print window flow |
+| `app/downloads.js` | Recent-downloads list, intake, Use/Show/Clear/preview |
+| `app/crop.js` | Crop editor, auto-orient, rotate-to-portrait |
+| `app/detect.js` | Turns detector output into ranked candidates |
+| `detection/label-detector.js` | Full cascade + ranking (shape score, packing-slip penalty, carrier/barcode scoring) |
+| `detection/pdf-processor.js` | pdf.js page render, cut-line detection, twin-split guard |
+| `detection/png-processor.js` | Image decode, upscale to ~3000 px for phone screenshots |
+| `detection/crop-engine.js` | White-trim, content rescue, gap clamp, orientation probe |
+| `detection/model-detector.js` | ONNX YOLO inference (fallback / refinement layer) |
+| `models/shipping-label.onnx` | On-device YOLO model (~10 MB) |
+| `lib/` | pdf.js, ONNX Runtime, heic2any |
+| `background.js` | Service worker — event-driven only, no polling |
+| `outlook-reader.js` | Outlook content script — sender read, Download Label grab, reading-view restore |
+| `page-label-drag.js` | Drag-to-panel support |
+| `dev/test.html` | Training Studio entry point (not shipped) |
+| `dev/studio/` | Studio modules: pipeline runner, wins-by-detector stats, per-label trace log, 4×6 preview, fix-report export |
+| `dev/fix-check.html` | IoU scoring harness — runs real pipeline vs. tagged corrections |
 
-The `dev/` folder holds the **Training Studio** (`dev/test.html` plus the `dev/studio/` modules) for measuring and tuning detection against a local folder of real labels — it runs the real pipeline and provides a wins-by-detector tally, full per-label logs, an in-store 4x6 preview, studio-only variant rules, and a tagged fix-report of what to fix. It is not part of the shipped extension. To support it, the detection modules expose optional trace hooks (`setTraceSink`/`clearTrace`) plus score helpers; these are no-ops in normal use (the sink stays null) and have no effect on the shipped extension.
+## Detection pipeline
+
+The detector runs a deterministic cascade in priority order:
+
+1. Embedded USPS / full-page image labels (highest confidence — early-exits when a strong match is found)
+2. Dashed-border and solid-border frames (per-edge segment continuity check filters phantom boxes from heading underlines)
+3. Fold-here / label-sized heuristics
+4. ONNX YOLO model (refinement / fallback)
+5. Keyword, barcode, and text fallbacks
+
+Results are ranked by a composite score: label shape (4×6 gets a boost; extreme aspect ratios a penalty), barcode containment, carrier text, and packing-slip/invoice page penalty (−2 for pure order pages without label cues). The top candidate is presented first.
+
+## Training Studio
+
+`dev/test.html` runs the real detection pipeline against a local folder of labels. It requires the extension to be loaded (ONNX and pdf.js workers need `chrome.runtime`). Features:
+
+- Per-file trace: cascade stages, early-exit reason, ONNX prediction, full score breakdown
+- Wins-by-detector tally
+- Inline 4×6 preview at 203 DPI (landscape/oversize warnings)
+- Tagged fix-report export (category + note + corrected crop rect) → `dev/fix-report-current.json`
+- `dev/fix-check.html` harness re-runs the pipeline and scores IoU of the top candidate's output vs. each correction
+
+The training corpus (`dev/samples/`, `dev/fix-labels/`) and reports are gitignored (customer PII).
+
+## Performance notes
+
+- The ONNX model loads on first use, not at panel open.
+- Model inference scope is narrowed to pages with label-like candidates — on clean labels with a confident deterministic hit the model never runs.
+- PNG/JPEG processing: upscale adds ~30% time on images only (was the fastest path); PDFs are unaffected.
+- All heavy work (pdf.js render, ONNX, pixel scans) runs in the popout's own renderer process — nothing in the extension can delay Outlook's inbox rendering or mail delivery.
+- The Outlook content script does nothing while the Outlook tab is hidden (catches up on tab focus).
 
 ## Notes
 
-- No backend server. No API key. No internet required for detection.
-- File URL access is required for the extension to load files directly from Recent downloads.
-- The auto-clear warning countdown is 60 seconds.
-- The ONNX detection model loads on first use (not at panel open) to keep startup fast.
+- No backend. No API key. No internet required.
+- File URL access required for loading files from Recent downloads.
+- Auto-clear warning countdown: 60 seconds.
+- Lab mode: available for debug details alongside the default Staff mode.
