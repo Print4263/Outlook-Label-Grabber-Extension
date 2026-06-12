@@ -216,12 +216,19 @@
   // detection on a page that happens to carry order text is untouched.
   const ORDER_DETAILS_PAGE_PATTERN = new RegExp([
     "PACKING SLIP PUT THIS IN THE BOX",
+    "PACKING SLIP",
     "PACKING LIST",
     "QTY\\s+SKU",
     "ITEM DESCRIPTIONS\\s+QUANTITY",
     "AMAZON RETURN ID:",
     "RETURN ORDER NUMBER:",
-    "ORDER SUMMARY"
+    "ORDER SUMMARY",
+    // Invoice / order-summary wording: any one of these alone could appear in
+    // marketing footers, so pair the looser ones with a second signal.
+    "\\bINVOICE\\b[\\s\\S]{0,400}(SUBTOTAL|TOTAL DUE|BILL TO)",
+    "SUBTOTAL[\\s\\S]{0,200}(SHIPPING & HANDLING|GRAND TOTAL|ORDER TOTAL)",
+    "PAYMENT METHOD[\\s\\S]{0,300}(SUBTOTAL|ORDER TOTAL)",
+    "BILLING ADDRESS[\\s\\S]{0,300}(SUBTOTAL|ORDER TOTAL|PAYMENT)"
   ].join("|"));
   const ORDER_DETAILS_DEMOTE_REASONS = ["keywords", "embedded-label-page", "text-label-page"];
 
@@ -908,7 +915,9 @@
       + Number(candidate.confidence || 0)
       + labelTextScore(page?.text)
       + carrierTextPreferenceScore(candidate, page)
-      + barcodeContainmentPenalty(candidate, page);
+      + barcodeContainmentPenalty(candidate, page)
+      + labelShapeRankScore(candidate)
+      + orderDetailsPagePenalty(page);
   }
 
   // Same components as detectionRankScore, itemized for the dev studio log so the
@@ -920,14 +929,53 @@
     const textScore = labelTextScore(page?.text);
     const carrierPref = carrierTextPreferenceScore(candidate, page);
     const barcodePenalty = barcodeContainmentPenalty(candidate, page);
+    const shapeScore = labelShapeRankScore(candidate);
+    const orderPenalty = orderDetailsPagePenalty(page);
     return {
       qualityScore,
       confidence,
       labelTextScore: textScore,
       carrierPref,
       barcodePenalty,
-      total: qualityScore + confidence + textScore + carrierPref + barcodePenalty
+      shapeScore,
+      orderPenalty,
+      total: qualityScore + confidence + textScore + carrierPref + barcodePenalty + shapeScore + orderPenalty
     };
+  }
+
+  // A 4x6 thermal label prints best when the crop already IS 4x6-shaped
+  // (either orientation — landscape sources are auto-rotated). Reward crops
+  // whose final output is label-shaped and penalize extreme aspect ratios
+  // (full phone screenshots, banner strips) so a clean 4x6 candidate sits
+  // above them in the picker. Sized to order border/model candidates
+  // (quality 2-4) without upsetting the embedded-label hierarchy (10+).
+  const LABEL_SHAPE_STRONG_DISTANCE = 0.08;
+  const LABEL_SHAPE_NEAR_DISTANCE = 0.15;
+  const LABEL_SHAPE_EXTREME_MIN_ASPECT = 0.45;
+  const LABEL_SHAPE_EXTREME_MAX_ASPECT = 2.3;
+
+  function labelShapeRankScore(candidate) {
+    const label = candidate?.label;
+    const width = Number(label?.width || 0);
+    const height = Number(label?.height || 0);
+    if (!width || !height) return 0;
+    const aspect = width / height;
+    const distance = Math.min(Math.abs(aspect - 2 / 3), Math.abs(aspect - 1.5));
+    if (distance <= LABEL_SHAPE_STRONG_DISTANCE) return 0.8;
+    if (distance <= LABEL_SHAPE_NEAR_DISTANCE) return 0.4;
+    if (aspect < LABEL_SHAPE_EXTREME_MIN_ASPECT || aspect > LABEL_SHAPE_EXTREME_MAX_ASPECT) return -0.8;
+    return 0;
+  }
+
+  // Candidates living on a pure order-details page (packing slip, invoice,
+  // order summary) sink below same-document label pages: the page talks about
+  // the ORDER but shows no shipping-label wording at all. Pages that carry
+  // both (label printed above the slip section) keep their score — the strong
+  // label cue vetoes the penalty.
+  function orderDetailsPagePenalty(page) {
+    if (!page || !isOrderDetailsText(page.text)) return 0;
+    if (hasStrongLabelCue(page.text)) return 0;
+    return -2;
   }
 
   // A real shipping-label crop must contain a barcode. When a crop with explicit
