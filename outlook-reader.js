@@ -132,11 +132,14 @@ if (window.__labelExtractorOutlookReaderLoaded) {
   function handleMutation() {
     clearTimeout(retryTimer);
     retryCount = 0;
-    scheduleRead();
+    // Background tabs don't need live sender reads — one read on the next
+    // visibilitychange covers it. Keeps the extension's footprint in the
+    // Outlook tab near zero while mail is syncing in the background.
+    if (!document.hidden) scheduleRead();
     // Upgrade body -> reading pane once it renders, or re-bind if the
-    // observed node was detached by an Outlook re-render.
-    const pane = findReadingPane();
-    if ((observedTarget === document.body && pane) || !observedTarget.isConnected) {
+    // observed node was detached by an Outlook re-render. Only pay the
+    // selector queries when the current target needs replacing.
+    if (!observedTarget.isConnected || observedTarget === document.body) {
       attachObserver();
     }
   }
@@ -147,6 +150,11 @@ if (window.__labelExtractorOutlookReaderLoaded) {
   // replaced (a swapped-out pane stops emitting mutations on its own).
   window.addEventListener("hashchange", () => { attachObserver(); scheduleRead(); });
   window.addEventListener("popstate", () => { attachObserver(); scheduleRead(); });
+  // Catch up on whatever changed while the tab was hidden (reads are skipped
+  // there — see handleMutation).
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) { attachObserver(); scheduleRead(); }
+  });
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== "grab-outlook-label-attachment") return false;
@@ -215,10 +223,16 @@ if (window.__labelExtractorOutlookReaderLoaded) {
     }
     grabLog("findDownloadTarget: no download control found in the chip or its menu.");
 
+    // Strategies below this point OPEN Outlook UI (the attachment preview
+    // overlay, or a menu via keyboard). Left open, the preview replaces the
+    // reading-pane view — closing it later sometimes lands the user back in
+    // the inbox instead of the open email. Always restore the reading view
+    // after the download click has had a moment to register.
     const previewTarget = await openPreviewAndFindDownload(best.element);
     if (previewTarget) {
       grabLog("RESULT: clicking preview-download-action target =", describeEl(previewTarget));
       clickElement(previewTarget);
+      restoreReadingViewSoon();
       return {
         ok: true,
         fileName: best.fileName,
@@ -226,11 +240,15 @@ if (window.__labelExtractorOutlookReaderLoaded) {
       };
     }
     grabLog("openPreviewAndFindDownload: no download control found in the preview.");
+    // The preview may be open with no usable download control — close it
+    // before trying anything else so it can't swallow later clicks.
+    await restoreReadingView();
 
     const keyboardTarget = await openAttachmentMenuWithKeyboard(best.element);
     if (keyboardTarget) {
       grabLog("RESULT: clicking keyboard-menu-download-action target =", describeEl(keyboardTarget));
       clickElement(keyboardTarget);
+      restoreReadingViewSoon();
       return {
         ok: true,
         fileName: best.fileName,
@@ -238,15 +256,20 @@ if (window.__labelExtractorOutlookReaderLoaded) {
       };
     }
     grabLog("openAttachmentMenuWithKeyboard: no download control found.");
+    await restoreReadingView();
 
-    const lastChanceTarget = findAnyVisibleDownloadAction();
+    // Last resort: only controls inside an OPEN overlay/menu qualify. The old
+    // document-wide scan could click an unrelated "Download"/"Save" control in
+    // the mail surface — the prime suspect for surprise navigation.
+    const lastChanceTarget = findOverlayDownloadAction();
     if (lastChanceTarget) {
-      grabLog("RESULT: clicking page-download-action target =", describeEl(lastChanceTarget));
+      grabLog("RESULT: clicking overlay-download-action target =", describeEl(lastChanceTarget));
       clickElement(lastChanceTarget);
+      restoreReadingViewSoon();
       return {
         ok: true,
         fileName: best.fileName,
-        method: "page-download-action"
+        method: "overlay-download-action"
       };
     }
     grabLog("RESULT: attachment recognized but NO download control found by any strategy.");
@@ -256,6 +279,59 @@ if (window.__labelExtractorOutlookReaderLoaded) {
       fileName: best.fileName,
       message: "Found the attachment, but Outlook did not show a Download button in the chip or preview."
     };
+  }
+
+  // --- Reading-view restoration --------------------------------------------
+  // The attachment preview is a full overlay; Outlook treats it as a
+  // navigation state. Close it explicitly (close button first, Escape as the
+  // fallback) so the user stays on the email they had open.
+  const OVERLAY_SELECTOR = "[role='dialog'], [class*='lightbox' i], [class*='previewContainer' i], [data-app-section*='Preview' i]";
+  const CLOSE_HINT_PATTERN = /^(close|back|dismiss)\b|(close|back to message)/i;
+
+  function findOpenOverlay() {
+    return Array.from(document.querySelectorAll(OVERLAY_SELECTOR)).find(isVisible) || null;
+  }
+
+  async function restoreReadingView() {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const overlay = findOpenOverlay();
+      if (!overlay) return;
+      const closeButton = Array.from(overlay.querySelectorAll("button, [role='button']"))
+        .find((control) => isVisible(control) && CLOSE_HINT_PATTERN.test(
+          (control.getAttribute("aria-label") || control.getAttribute("title") || control.textContent || "").trim()
+        ));
+      if (closeButton) {
+        grabLog("restoreReadingView: clicking close button", describeEl(closeButton));
+        clickElement(closeButton);
+      } else {
+        grabLog("restoreReadingView: no close button — sending Escape");
+        sendEscape(overlay);
+      }
+      await delay(250);
+    }
+  }
+
+  // After a successful download click, give Outlook a beat to register it
+  // before tearing the preview down. Fire-and-forget: the grab response
+  // doesn't need to wait for the view restore.
+  function restoreReadingViewSoon() {
+    setTimeout(() => { restoreReadingView().catch(() => {}); }, 450);
+  }
+
+  function sendEscape(overlay) {
+    const target = (overlay && overlay.contains(document.activeElement) && document.activeElement)
+      || overlay
+      || document.body;
+    for (const type of ["keydown", "keyup"]) {
+      target.dispatchEvent(new KeyboardEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        key: "Escape",
+        code: "Escape",
+        keyCode: 27,
+        which: 27
+      }));
+    }
   }
 
   // The old scan walked every span/div in the Outlook app and built textContent
@@ -412,6 +488,11 @@ if (window.__labelExtractorOutlookReaderLoaded) {
   }
 
   function findDocumentDownloadAction() {
+    // Prefer controls inside the open overlay (that's where the preview's
+    // toolbar lives); fall back to the old document-wide scan for Outlook
+    // layouts that dock the viewer outside a dialog role.
+    const overlayHit = findOverlayDownloadAction();
+    if (overlayHit) return overlayHit;
     const controls = Array.from(document.querySelectorAll("button, a, [role='button'], [role='menuitem']"));
     return controls.find((control) => isVisible(control) && DOWNLOAD_HINT_PATTERN.test(controlText(control)));
   }
@@ -427,9 +508,17 @@ if (window.__labelExtractorOutlookReaderLoaded) {
     return menuControls.find((control) => isVisible(control) && DOWNLOAD_HINT_PATTERN.test(controlText(control)));
   }
 
-  function findAnyVisibleDownloadAction() {
-    const controls = Array.from(document.querySelectorAll("button, a, [role='button'], [role='menuitem']"));
-    return controls.find((control) => isVisible(control) && DOWNLOAD_HINT_PATTERN.test(controlText(control)));
+  // Replaces the old document-wide findAnyVisibleDownloadAction: only an open
+  // overlay or menu is a safe place to click a "Download" control — anywhere
+  // else risks hitting an unrelated control in the mail surface.
+  function findOverlayDownloadAction() {
+    const containers = Array.from(document.querySelectorAll(`${OVERLAY_SELECTOR}, [role='menu']`)).filter(isVisible);
+    for (const container of containers) {
+      const controls = Array.from(container.querySelectorAll("button, a, [role='button'], [role='menuitem']"));
+      const hit = controls.find((control) => isVisible(control) && DOWNLOAD_HINT_PATTERN.test(controlText(control)));
+      if (hit) return hit;
+    }
+    return null;
   }
 
   function clickElement(element) {
