@@ -17,7 +17,10 @@ function openCropEditor(index) {
       const containerWidth = els.cropStage.clientWidth || 400;
       const naturalAspect = (els.cropImage.naturalWidth || 1) / Math.max(1, els.cropImage.naturalHeight || 1);
       const idealHeight = Math.round(containerWidth / naturalAspect);
-      const maxHeight = Math.round(window.innerHeight * 0.92);
+      // window.innerHeight is visual px; style.height is layout px, which the
+      // root UI-scale zoom multiplies at render. Convert so the cap means the
+      // same fraction of the window at every scale setting.
+      const maxHeight = Math.round((window.innerHeight / effectiveCropZoom()) * 0.92);
       els.cropStage.style.height = `${Math.min(idealHeight, maxHeight)}px`;
       positionCropLayerToImage();
     }, { once: true });
@@ -338,6 +341,15 @@ function bindCropBoxEvents() {
   els.cropBox.addEventListener("pointercancel", () => {
     dragging = null;
   });
+
+  // The layer is positioned once when the image loads, but the stage can move
+  // or resize afterwards — panel resize, UI-scale changes, a scrollbar
+  // appearing. Re-glue it on any of those so the crop box always spans the
+  // full image; positionCropLayerToImage no-ops while the editor is hidden.
+  window.addEventListener("resize", positionCropLayerToImage);
+  if (typeof ResizeObserver === "function") {
+    new ResizeObserver(positionCropLayerToImage).observe(els.cropStage);
+  }
 }
 
 function resizeCropRect(original, handle, dx, dy) {
@@ -370,12 +382,27 @@ function renderCropBox() {
 
 function positionCropLayerToImage() {
   if (els.cropEditor.hidden) return;
+  // getBoundingClientRect returns visual px, which already include the root
+  // UI-scale zoom (applyUiScale in sidepanel.js). Inline style px are layout
+  // px, multiplied by that zoom again at render. Convert back to layout px or
+  // the layer comes out zoom× too small and shifted up-left on scaled-down
+  // register screens, capping the crop box short of the image edges.
+  const zoom = effectiveCropZoom();
   const stageRect = els.cropImage.parentElement.getBoundingClientRect();
   const imageRect = fittedImageRect(els.cropImage);
-  els.cropLayer.style.left = `${imageRect.left - stageRect.left}px`;
-  els.cropLayer.style.top = `${imageRect.top - stageRect.top}px`;
-  els.cropLayer.style.width = `${imageRect.width}px`;
-  els.cropLayer.style.height = `${imageRect.height}px`;
+  els.cropLayer.style.left = `${(imageRect.left - stageRect.left) / zoom}px`;
+  els.cropLayer.style.top = `${(imageRect.top - stageRect.top) / zoom}px`;
+  els.cropLayer.style.width = `${imageRect.width / zoom}px`;
+  els.cropLayer.style.height = `${imageRect.height / zoom}px`;
+}
+
+// Effective CSS zoom at the crop image. currentCSSZoom (Chrome 128+) reads the
+// real composed value; fall back to the root inline zoom applyUiScale sets.
+function effectiveCropZoom() {
+  const zoom = Number(els.cropImage.currentCSSZoom);
+  if (Number.isFinite(zoom) && zoom > 0) return zoom;
+  const rootZoom = Number(document.documentElement.style.zoom);
+  return Number.isFinite(rootZoom) && rootZoom > 0 ? rootZoom : 1;
 }
 
 function fittedImageRect(image) {

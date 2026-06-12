@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Crop layer vs UI-scale zoom check</title>
+<style>
+  * { box-sizing: border-box; } /* matches styles.css */
+  body { font-family: "Segoe UI", Arial, sans-serif; margin: 16px; background: #f3f5f8; color: #111827; }
+  h1 { font-size: 18px; }
+  #out { font-size: 13px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px; white-space:pre-wrap; font-family: ui-monospace, Consolas, monospace; }
+  .pass { color:#15803d; font-weight:700; }
+  .fail { color:#b91c1c; font-weight:700; }
+  .crop-stage { position: relative; width: 420px; height: 560px; overflow: hidden; border: 1px solid #c4ccd6; background:#f8fafc; }
+  #cropImage { display: block; width: 100%; height: 100%; object-fit: contain; }
+  #cropLayer { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+  #cropBox { position: absolute; border: 2px solid #2563eb; background: rgba(37,99,235,0.08); }
+</style>
+</head>
+<body>
+<h1>Crop layer alignment under root CSS zoom (register UI-scale)</h1>
+<pre id="out">running…</pre>
+
+<section id="cropEditor">
+  <div class="crop-stage">
+    <img id="cropImage" alt="">
+    <div id="cropLayer"><div id="cropBox"></div></div>
+  </div>
+</section>
+
+<script>
+// Minimal stand-ins for the sidepanel.js globals crop.js uses at call time.
+const els = {
+  cropEditor: document.getElementById("cropEditor"),
+  cropStage: document.querySelector(".crop-stage"),
+  cropImage: document.getElementById("cropImage"),
+  cropLayer: document.getElementById("cropLayer"),
+  cropBox: document.getElementById("cropBox")
+};
+const state = { cropRect: { x: 0, y: 0, width: 1, height: 1 }, results: [], cropTargetIndex: -1 };
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+</script>
+<script src="../app/crop.js"></script>
+<script>
+window.__check = { done: false, results: [] };
+const lines = [];
+
+function makeImage() {
+  // 4:6-ish portrait label, narrower than the 420x560 stage aspect so it
+  // letterboxes horizontally like a real contained label.
+  const c = document.createElement("canvas");
+  c.width = 800; c.height = 1400;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 800, 1400);
+  ctx.fillStyle = "#111"; ctx.fillRect(60, 1100, 680, 200);
+  return new Promise((res) => {
+    els.cropImage.onload = () => res();
+    els.cropImage.src = c.toDataURL("image/png");
+  });
+}
+
+function rectOf(el) { const r = el.getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height }; }
+
+async function run() {
+  await makeImage();
+  for (const pct of [100, 90, 80, 65, 110]) {
+    document.documentElement.style.zoom = String(pct / 100);
+    // force layout with the new zoom before measuring
+    void document.body.offsetWidth;
+    positionCropLayerToImage();
+    state.cropRect = { x: 0, y: 0, width: 1, height: 1 };
+    renderCropBox();
+    void document.body.offsetWidth;
+
+    const img = fittedImageRect(els.cropImage); // visual px, ground truth
+    const layer = rectOf(els.cropLayer);
+    const box = rectOf(els.cropBox);
+    const dEdges = [
+      Math.abs(layer.l - img.left), Math.abs(layer.t - img.top),
+      Math.abs((layer.l + layer.w) - (img.left + img.width)),
+      Math.abs((layer.t + layer.h) - (img.top + img.height))
+    ];
+    const worst = Math.max(...dEdges);
+    // full-size crop box must also reach all four image edges (border included)
+    const boxWorst = Math.max(
+      Math.abs(box.l - img.left), Math.abs(box.t - img.top),
+      Math.abs((box.l + box.w) - (img.left + img.width)),
+      Math.abs((box.t + box.h) - (img.top + img.height))
+    );
+    const coverage = (layer.w * layer.h) / (img.width * img.height) * 100;
+    const pass = worst <= 1.5 && boxWorst <= 1.5;
+    window.__check.results.push({ pct, worst: +worst.toFixed(2), boxWorst: +boxWorst.toFixed(2), coverage: +coverage.toFixed(1), pass });
+    lines.push(`zoom ${String(pct).padStart(3)}%  layer-vs-image worst edge ${worst.toFixed(2)}px  full-box worst edge ${boxWorst.toFixed(2)}px  reachable area ${coverage.toFixed(1)}%  ${pass ? "PASS" : "FAIL"}`);
+  }
+  document.documentElement.style.zoom = "1";
+  const allPass = window.__check.results.every(r => r.pass);
+  lines.push("", allPass ? "ALL PASS — crop layer spans the full image at every UI scale." : "FAILURES PRESENT");
+  document.getElementById("out").innerHTML = lines.join("\n").replace(/PASS/g, '<span class="pass">PASS</span>').replace(/FAIL(?!U)/g, '<span class="fail">FAIL</span>');
+  window.__check.done = true;
+}
+run();
+</script>
+</body>
+</html>
