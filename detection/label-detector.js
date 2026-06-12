@@ -613,6 +613,7 @@
         if (!canvas || canvas.width < 300 || canvas.height < 300) continue;
         const aspect = canvas.width / Math.max(1, canvas.height);
         if (aspect < 0.38 || aspect > 2.65) continue;
+        if (isTemplateBackgroundImage(canvas, page)) continue;
 
         const barcodeRegions = findBarcodeRegions(canvas);
         if (!looksLikeCompleteEmbeddedLabel(canvas, barcodeRegions)) continue;
@@ -661,6 +662,41 @@
       && region.y > canvas.height * 0.45
     ));
     return hasLargeHorizontalBarcode && canvas.height > canvas.width * 1.15;
+  }
+
+  // Some PDFs compose the label from a full-page background TEMPLATE image
+  // (frame lines, "UPS GROUND" bar) with the variable data — addresses,
+  // tracking number, barcodes — drawn on top as separate text/image objects.
+  // The raw template prints as a blank skeleton. Detect it by ink: a template
+  // has far less dark content than the rendered page that includes the
+  // overlays. Only fires for full-page-shaped images on pages that have a
+  // real text layer, so image-only label PDFs (no overlays, no text) keep
+  // using the embedded image untouched.
+  function isTemplateBackgroundImage(canvas, page) {
+    if (!page?.canvas) return false;
+    const pageAspect = page.canvas.width / Math.max(1, page.canvas.height);
+    const imgAspect = canvas.width / Math.max(1, canvas.height);
+    if (Math.abs(imgAspect - pageAspect) / pageAspect > 0.05) return false;
+    if (String(page.text || "").trim().length < 50) return false;
+    const imgInk = canvasInkRatio(canvas);
+    const pageInk = canvasInkRatio(page.canvas);
+    return pageInk > imgInk * 1.5 && pageInk - imgInk > 0.03;
+  }
+
+  // Dark-pixel ratio on a downsampled copy (cheap, ~400px wide readback).
+  function canvasInkRatio(canvas) {
+    const scale = Math.min(1, 400 / Math.max(1, canvas.width));
+    const sample = document.createElement("canvas");
+    sample.width = Math.max(1, Math.round(canvas.width * scale));
+    sample.height = Math.max(1, Math.round(canvas.height * scale));
+    const ctx = sample.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(canvas, 0, 0, sample.width, sample.height);
+    const data = ctx.getImageData(0, 0, sample.width, sample.height).data;
+    let dark = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] < 128 && data[i + 3] > 100) dark++;
+    }
+    return dark / (sample.width * sample.height);
   }
 
   // A large embedded image whose aspect is ~4:6 or ~6:4 is a label by shape

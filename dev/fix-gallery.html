@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fix-report visual gallery</title>
+<style>
+body { font-family: "Segoe UI", Arial, sans-serif; margin: 16px; background: #f4f5f7; }
+h1 { font-size: 20px; }
+#status { margin: 8px 0 16px; font-weight: 600; }
+.grid { display: flex; flex-wrap: wrap; gap: 14px; }
+.card { background: #fff; border: 1px solid #d7dae0; border-radius: 8px; padding: 10px; width: 520px; }
+.card.bad { border-color: #d33; border-width: 2px; }
+.card.warn { border-color: #e09b00; border-width: 2px; }
+.card.unscored { border-color: #7b5cd6; border-width: 2px; }
+.thumbs { display: flex; gap: 10px; align-items: flex-start; }
+.thumbs figure { margin: 0; }
+.thumbs figcaption { font-size: 11px; color: #555; text-align: center; margin-top: 2px; }
+canvas { border: 1px solid #ccc; display: block; }
+.meta { font-size: 12px; margin-top: 8px; line-height: 1.5; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-weight: 700; font-size: 12px; color: #fff; }
+.badge.good { background: #2e9e44; }
+.badge.warn { background: #e09b00; }
+.badge.bad { background: #d33; }
+.badge.unscored { background: #7b5cd6; }
+.legend { font-size: 12px; margin-bottom: 12px; }
+.legend span { display: inline-block; margin-right: 14px; }
+.swatch { display: inline-block; width: 12px; height: 12px; vertical-align: -2px; margin-right: 4px; border: 1px solid #999; }
+</style>
+</head>
+<body>
+<h1>Fix-report visual gallery — what the pipeline grabs from each corrected file</h1>
+<div class="legend">
+  <span><span class="swatch" style="background:rgba(46,158,68,.5)"></span>your corrected crop</span>
+  <span><span class="swatch" style="background:rgba(221,51,51,.5)"></span>pipeline output (top candidate)</span>
+  <span>cards sorted worst-first; purple = scorer can't map spaces, judge by eye</span>
+</div>
+<div id="status">scripts loading...</div>
+<div class="grid" id="grid"></div>
+
+<script src="../lib/pdf.min.js"></script>
+<script src="../lib/ort.min.js"></script>
+<script>
+// Cache-bust the detection stack on every load (same trick as test.html).
+(function () {
+  const v = Date.now();
+  ["../detection/crop-engine.js", "../detection/model-detector.js",
+   "../detection/label-detector.js", "../detection/pdf-processor.js",
+   "../detection/png-processor.js", "../config.js"].forEach((src) => {
+    document.write('<script src="' + src + "?v=" + v + '"><\/script>');
+  });
+})();
+</script>
+<script>
+window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
+
+// Visual companion to fix-check.html: for every corrected file in
+// dev/fix-report-current.json, run the real pipeline and draw (a) the winning
+// page with the user's corrected rect (green) and the pipeline's output rect
+// (red) overlaid, and (b) the actual label output the user would see. Cards
+// sort worst-first so regressions jump out. Dev-only, not shipped.
+window.__gallery = { done: false, count: 0 };
+
+const THUMB_W = 280;
+const OUT_W = 200;
+
+function iou(a, b) {
+  const ix = Math.max(a.x, b.x);
+  const iy = Math.max(a.y, b.y);
+  const ix2 = Math.min(a.x + a.width, b.x + b.width);
+  const iy2 = Math.min(a.y + a.height, b.y + b.height);
+  const inter = Math.max(0, ix2 - ix) * Math.max(0, iy2 - iy);
+  const union = a.width * a.height + b.width * b.height - inter;
+  return union > 0 ? inter / union : 0;
+}
+
+function coverage(target, out) {
+  const ix = Math.max(target.x, out.x);
+  const iy = Math.max(target.y, out.y);
+  const ix2 = Math.min(target.x + target.width, out.x + out.width);
+  const iy2 = Math.min(target.y + target.height, out.y + out.height);
+  const inter = Math.max(0, ix2 - ix) * Math.max(0, iy2 - iy);
+  return inter / Math.max(1, target.width * target.height);
+}
+
+async function detectFile(name) {
+  const isPdf = /\.pdf$/i.test(name);
+  const response = await fetch("fix-labels/" + encodeURIComponent(name));
+  if (!response.ok) throw new Error("fetch " + response.status);
+  if (isPdf) {
+    const processed = await window.LabelExtractorPDF.process({
+      buffer: await response.arrayBuffer(),
+      type: "application/pdf",
+      name
+    });
+    if (Array.isArray(processed)) return { candidates: processed, pages: null };
+    if (processed?.pages) {
+      const candidates = await window.LabelExtractorDetector.detectPdfCandidates(processed.pages);
+      return { candidates: candidates.length ? candidates : [processed], pages: processed.pages };
+    }
+    return { candidates: [processed], pages: null };
+  }
+  const blob = await response.blob();
+  const page = await window.LabelExtractorPNG.process({ blob, type: blob.type, name }, 0);
+  const candidates = await window.LabelExtractorDetector.detectAllPngCandidates([page]);
+  return { candidates, pages: [page] };
+}
+
+function scaleCanvas(source, maxW) {
+  const s = Math.min(1, maxW / source.width);
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(source.width * s));
+  c.height = Math.max(1, Math.round(source.height * s));
+  c.getContext("2d").drawImage(source, 0, 0, c.width, c.height);
+  return { canvas: c, scale: s };
+}
+
+function drawRect(ctx, rect, scale, color) {
+  if (!rect) return;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(rect.x * scale, rect.y * scale, rect.width * scale, rect.height * scale);
+}
+
+async function labelCanvas(label) {
+  if (!label) return null;
+  if (label.canvas) return label.canvas;
+  if (!label.dataUrl) return null;
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      c.getContext("2d").drawImage(img, 0, 0);
+      resolve(c);
+    };
+    img.onerror = () => resolve(null);
+    img.src = label.dataUrl;
+  });
+}
+
+function badge(entry) {
+  if (entry.iou == null) return '<span class="badge unscored">EYE CHECK</span>';
+  if (entry.iou >= 0.8) return '<span class="badge good">IoU ' + entry.iou.toFixed(2) + '</span>';
+  if (entry.iou >= 0.6) return '<span class="badge warn">IoU ' + entry.iou.toFixed(2) + '</span>';
+  return '<span class="badge bad">IoU ' + entry.iou.toFixed(2) + '</span>';
+}
+
+window.runGallery = async function (names) {
+  const status = document.getElementById("status");
+  const grid = document.getElementById("grid");
+  grid.innerHTML = "";
+  window.__gallery = { done: false, count: 0 };
+  const report = await (await fetch("fix-report-current.json")).json();
+  const corrections = report.corrections || {};
+  const keys = names && names.length
+    ? names.map((n) => "LABELS/" + n)
+    : Object.keys(corrections);
+  try { await window.LabelExtractorModelDetector.warmUp(); } catch (_) {}
+
+  const cards = [];
+  for (const key of keys) {
+    const rec = corrections[key];
+    const name = rec?.fileName || key.replace(/^LABELS\//, "");
+    status.textContent = "running " + name + " (" + (cards.length + 1) + "/" + keys.length + ")";
+    const entry = { name, category: rec?.category || "", note: rec?.note || "" };
+    try {
+      const { candidates, pages } = await detectFile(name);
+      const top = (candidates || []).filter(Boolean)[0];
+      entry.detector = top?.reason || "none";
+      const page = (pages || []).find((p) => p.pageIndex === top?.pageIndex) || (pages || [])[0];
+      const corrected = rec?.corrected;
+      const target = corrected?.pixelRect || null;
+
+      // Map output rect into the correction's space when dims line up uniformly.
+      const sw = Number(corrected?.sourceWidth || 0);
+      const sh = Number(corrected?.sourceHeight || 0);
+      let outRect = null, targetOnPage = null, ratio = null;
+      if (page?.canvas && sw && sh) {
+        const rw = page.canvas.width / sw;
+        if (Math.abs(rw - page.canvas.height / sh) < 0.02 * rw) ratio = rw;
+      }
+      if (ratio && top?.label?.sourceRect) {
+        const r = top.label.sourceRect;
+        outRect = { x: r.x, y: r.y, width: r.width, height: r.height };
+        if (target) targetOnPage = { x: target.x * ratio, y: target.y * ratio, width: target.width * ratio, height: target.height * ratio };
+      }
+      if (outRect && targetOnPage) {
+        const a = { x: outRect.x / ratio, y: outRect.y / ratio, width: outRect.width / ratio, height: outRect.height / ratio };
+        entry.iou = +iou(a, target).toFixed(3);
+        entry.cover = +coverage(target, a).toFixed(3);
+      }
+
+      if (page?.canvas) {
+        const { canvas: thumb, scale } = scaleCanvas(page.canvas, THUMB_W);
+        const ctx = thumb.getContext("2d");
+        if (targetOnPage) drawRect(ctx, targetOnPage, scale, "rgba(46,158,68,.95)");
+        else if (ratio == null && target) entry.spaceNote = "correction drawn in a different space (rotated output or other page)";
+        if (outRect) drawRect(ctx, outRect, scale, "rgba(221,51,51,.9)");
+        entry.pageThumb = thumb;
+      }
+      const lc = await labelCanvas(top?.label);
+      if (lc) entry.outThumb = scaleCanvas(lc, OUT_W).canvas;
+    } catch (error) {
+      entry.error = String(error?.message || error);
+    }
+    cards.push(entry);
+    window.__gallery.count = cards.length;
+  }
+
+  cards.sort((a, b) => {
+    const ka = a.error ? -2 : (a.iou == null ? -1 : a.iou);
+    const kb = b.error ? -2 : (b.iou == null ? -1 : b.iou);
+    return ka - kb;
+  });
+
+  for (const entry of cards) {
+    const card = document.createElement("div");
+    const cls = entry.error || entry.iou != null && entry.iou < 0.6 ? "bad"
+      : entry.iou == null ? "unscored"
+      : entry.iou < 0.8 ? "warn" : "";
+    card.className = "card " + cls;
+    const thumbs = document.createElement("div");
+    thumbs.className = "thumbs";
+    if (entry.pageThumb) {
+      const f = document.createElement("figure");
+      f.append(entry.pageThumb);
+      const cap = document.createElement("figcaption");
+      cap.textContent = "source page + rects";
+      f.append(cap);
+      thumbs.append(f);
+    }
+    if (entry.outThumb) {
+      const f = document.createElement("figure");
+      f.append(entry.outThumb);
+      const cap = document.createElement("figcaption");
+      cap.textContent = "what staff sees";
+      f.append(cap);
+      thumbs.append(f);
+    }
+    card.append(thumbs);
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.innerHTML = badge(entry) + " <b>" + entry.name + "</b><br>"
+      + "tag: " + (entry.category || "—") + " · detector: " + (entry.detector || "—")
+      + (entry.cover != null ? " · keeps " + Math.round(entry.cover * 100) + "% of your crop" : "")
+      + (entry.spaceNote ? "<br><i>" + entry.spaceNote + "</i>" : "")
+      + (entry.note ? "<br>your note: " + entry.note : "")
+      + (entry.error ? "<br><b style='color:#d33'>ERROR: " + entry.error + "</b>" : "");
+    card.append(meta);
+    grid.append(card);
+  }
+  window.__gallery.done = true;
+  status.textContent = "done — " + cards.length + " files, sorted worst-first";
+  return cards.length;
+};
+document.getElementById("status").textContent = "ready — call runGallery()";
+</script>
+</body>
+</html>
