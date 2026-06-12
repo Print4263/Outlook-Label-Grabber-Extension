@@ -1,7 +1,7 @@
-// Print pipeline: monochrome conversion, 4x6/letter print HTML, and the print
+// Print pipeline: monochrome conversion, 4x6 print HTML, and the print
 // window/iframe flow. Plain (non-module) script: these functions stay global and
 // are called from sidepanel.js (printLabelAtIndex) exactly as before. They rely on
-// loadImage, escapeHtml, clamp, and state, which remain defined in sidepanel.js.
+// loadImage, escapeHtml, and state, which remain defined in sidepanel.js.
 
 // Quiet-zone border left around the trimmed label content when filling the 4x6
 // sheet, in inches, equal on all sides. Tunable: lower = bigger label (and closer
@@ -293,54 +293,7 @@ function positionPrintWindow(win, bounds) {
 }
 
 function makePrintHtml(dataUrl) {
-  const escaped = escapeHtml(dataUrl);
-  const width = clamp(Number(state.printWidth || 4), 2.5, 8.5);
-  const left = clamp(Number(state.printLeft || 0), 0, 7.5);
-  const top = clamp(Number(state.printTop || 0), 0, 10);
-  const isLabelMode = state.printMode === "label";
-  if (isLabelMode) return makeLabelPrintHtml(escaped);
-  const maxWidth = Math.max(0.5, 8.5 - left);
-  const maxHeight = Math.max(0.5, 11 - top);
-  const labelWidth = Math.min(width, maxWidth);
-  const labelHeight = Math.min(labelWidth * 1.5, maxHeight);
-  const viewportWidth = 980;
-  const scale = Math.max(0.72, Math.min(1, (viewportWidth - 80) / 816));
-  return `<!doctype html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>Print Label</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    @page { size: 8.5in 11in; margin: 0; }
-    html { margin: 0; padding: 0; min-height: 100%; background: #e8eaed; }
-    body {
-      margin: 0 auto; padding: 0; width: 8.5in; height: 11in;
-      background: #fff; box-shadow: 0 4px 24px rgba(0,0,0,0.18);
-      position: relative; overflow: hidden;
-      transform: scale(${scale}); transform-origin: top center;
-    }
-    .label {
-      position: absolute; left: ${left}in; top: ${top}in;
-      width: ${labelWidth}in; height: ${labelHeight}in;
-      overflow: hidden; background: #fff;
-    }
-    img {
-      width: 100%; height: 100%; display: block;
-      image-rendering: pixelated;
-      image-rendering: -webkit-optimize-contrast;
-      image-rendering: crisp-edges;
-    }
-    @media print {
-      html { background: #fff; }
-      body { margin: 0; box-shadow: none; transform: none; width: 8.5in; height: 11in; }
-    }
-  </style>
-</head>
-<body>
-  <div class="label"><img id="label" src="${escaped}" alt="Shipping label"></div>
-</body>
-</html>`;
+  return makeLabelPrintHtml(escapeHtml(dataUrl));
 }
 
 function makeLabelPrintHtml(escapedDataUrl) {

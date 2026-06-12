@@ -71,14 +71,6 @@
     return data;
   }
 
-  function imageDataToCanvas(imageData) {
-    const canvas = document.createElement("canvas");
-    canvas.width = imageData.width;
-    canvas.height = imageData.height;
-    canvas.getContext("2d").putImageData(imageData, 0, 0);
-    return canvas;
-  }
-
   async function autoCropCanvas(sourceCanvas, padding = 6, options = {}) {
     const resolved = resolveCropOptions(options);
     const { width, height } = sourceCanvas;
@@ -778,7 +770,6 @@
     clampRectTopBelowBlockers,
     rotateDataUrl,
     canvasToLabel,
-    imageDataToCanvas,
     eraseFaintRules,
     detectUprightFlip,
     barcodeBandStats,

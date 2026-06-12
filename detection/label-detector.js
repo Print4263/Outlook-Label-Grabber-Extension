@@ -12,7 +12,6 @@
     try { traceSink({ stage, ...(payload || {}) }); } catch (_) {}
   }
 
-  const CONFIDENCE_THRESHOLD = 0.72;
   const KEYWORDS = [
     "USPS TRACKING",
     "UPS TRACKING",
@@ -2098,12 +2097,10 @@
   }
 
   window.LabelExtractorDetector = {
-    CONFIDENCE_THRESHOLD,
     detectPdfPages,
     detectPdfCandidates,
     detectPngPages,
     detectAllPngCandidates,
-    detectDashedBorder,
     suggestLabelRect,
     findBarcodeRegions,
     // Dev training studio hooks (no-op in production — traceSink stays null):

@@ -181,13 +181,6 @@ async function openOrPositionPopoutOnce(anchorWindowId) {
   } catch (_) {}
 }
 
-function openPopoutForOutlook(tab) {
-  const tabId = tab?.id;
-  if (!tabId) return;
-  injectOutlookReader(tabId);
-  openOrPositionPopout(tab.windowId);
-}
-
 async function findOutlookTab(preferredWindowId) {
   const tabs = await chrome.tabs.query({});
   const outlookTabs = tabs.filter((tab) => isOutlookUrl(tab.url));

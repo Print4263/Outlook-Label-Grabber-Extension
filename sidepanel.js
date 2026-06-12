@@ -16,10 +16,6 @@ const state = {
   selectedLabelIndex: -1,
   cropTargetIndex: -1,
   cropRect: { x: 0.05, y: 0.05, width: 0.9, height: 0.9 },
-  printWidth: 4,
-  printLeft: 0,
-  printTop: 0,
-  printMode: "label",
   downloadsRefreshTimer: null,
   downloadPreviewUrl: "",
   inactivityTimer: null,
@@ -151,21 +147,13 @@ init();
 
 async function init() {
   const saved = await chrome.storage.local.get([
-    "letterLabelPrintWidth",
-    "letterLabelPrintLeft",
-    "letterLabelPrintTop",
-    "labelExtractorPrintMode",
     "labelDownloadsClearedAt",
     PENDING_CONTEXT_LABEL_KEY
   ]);
-  state.printWidth = Number(saved.letterLabelPrintWidth ?? 4);
-  state.printLeft = Number(saved.letterLabelPrintLeft ?? 0);
-  state.printTop = Number(saved.letterLabelPrintTop ?? 0);
-  state.printMode = "label";
   state.downloadsClearedAt = Number(saved.labelDownloadsClearedAt || 0);
   state.uiMode = "staff";
   initUiScale();
-  syncPrintControls();
+  updateSheetPreview();
   applyUiMode();
 
   bindEvents();
@@ -384,13 +372,7 @@ function buildDebugReport() {
     activeDownloadId: state.activeDownloadId,
     extraction: state.lastExtractionSummary,
     cachedPages,
-    results,
-    print: {
-      mode: state.printMode,
-      width: state.printWidth,
-      left: state.printLeft,
-      top: state.printTop
-    }
+    results
   }, null, 2);
 }
 
@@ -1392,38 +1374,6 @@ function markActiveDownloadPrinted() {
 
 // --- Print pipeline extracted to app/print.js ---
 
-function updatePrintSetting(key, value) {
-  state[key] = Number(value);
-  syncPrintControls();
-  chrome.storage.local.set({
-    letterLabelPrintWidth: state.printWidth,
-    letterLabelPrintLeft: state.printLeft,
-    letterLabelPrintTop: state.printTop,
-    labelExtractorPrintMode: state.printMode
-  }).catch(() => {});
-}
-
-function setPrintMode(mode) {
-  state.printMode = mode === "label" ? "label" : "letter";
-  if (state.printMode === "label") {
-    state.printWidth = 4;
-    state.printLeft = 0;
-    state.printTop = 0;
-  }
-  syncPrintControls();
-  chrome.storage.local.set({
-    labelExtractorPrintMode: state.printMode,
-    letterLabelPrintWidth: state.printWidth,
-    letterLabelPrintLeft: state.printLeft,
-    letterLabelPrintTop: state.printTop
-  }).catch(() => {});
-}
-
-function syncPrintControls() {
-  els.printSettings.classList.add("label-mode");
-  updateSheetPreview();
-}
-
 function updateSheetPreview() {
   const label = state.results[state.selectedLabelIndex];
   if (!label) {
@@ -1437,19 +1387,11 @@ function updateSheetPreview() {
     if (url && state.results[state.selectedLabelIndex] === label) els.sheetPreviewLabel.src = url;
   });
   const sheet = els.sheetPreviewLabel.parentElement;
-  const labelMode = state.printMode === "label";
-  sheet.classList.toggle("label-sheet", labelMode);
-  if (labelMode) {
-    els.sheetPreviewLabel.style.left = "0";
-    els.sheetPreviewLabel.style.top = "0";
-    els.sheetPreviewLabel.style.width = "100%";
-    els.sheetPreviewLabel.style.height = "100%";
-  } else {
-    els.sheetPreviewLabel.style.left = `${(state.printLeft / 8.5) * 100}%`;
-    els.sheetPreviewLabel.style.top = `${(state.printTop / 11) * 100}%`;
-    els.sheetPreviewLabel.style.width = `${(state.printWidth / 8.5) * 100}%`;
-    els.sheetPreviewLabel.style.height = "auto";
-  }
+  sheet.classList.add("label-sheet");
+  els.sheetPreviewLabel.style.left = "0";
+  els.sheetPreviewLabel.style.top = "0";
+  els.sheetPreviewLabel.style.width = "100%";
+  els.sheetPreviewLabel.style.height = "100%";
 }
 
 function labelToDataUrl(label) {
@@ -1517,10 +1459,6 @@ function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function formatNumber(value) {
-  return Number(value).toFixed(2).replace(/\.?0+$/, "");
 }
 
 function clamp(value, min, max) {

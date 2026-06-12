@@ -417,37 +417,8 @@ h2 {
   list-style-position: inside;
 }
 
-.settings-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr auto;
-  align-items: end;
-  gap: 11px;
-  border-top: 1px solid rgba(181, 190, 204, 0.82);
-  padding: 14px;
-}
-
-.settings-grid label {
-  display: grid;
-  gap: 7px;
-}
-
-.settings-grid #saveSettings,
-.settings-grid #resetLayoutButton {
-  min-height: 42px;
-}
-
-.settings-grid label,
-.print-settings label,
 .label {
   font-weight: 600;
-}
-
-.settings-grid input {
-  width: 100%;
-  border: 1px solid #c6cfdb;
-  border-radius: 8px;
-  padding: 10px;
-  background: #fbfcfe;
 }
 
 .recent-downloads header,
@@ -749,47 +720,6 @@ h2 {
 
 .file-row strong {
   overflow-wrap: anywhere;
-}
-
-.print-settings label {
-  display: grid;
-  gap: 7px;
-}
-
-.segmented {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  padding: 4px;
-  border-radius: 999px;
-  background: #eef2f7;
-}
-
-.segmented button {
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  box-shadow: none;
-  color: #64748b;
-  font-weight: 700;
-}
-
-.segmented button.active {
-  color: #111827;
-  background: #ffffff;
-  box-shadow: 0 5px 14px rgba(15, 23, 42, 0.12);
-}
-
-.print-settings label span {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 13px;
-}
-
-.print-settings input {
-  width: 100%;
-  accent-color: #2563eb;
 }
 
 .sheet-preview {
@@ -1215,11 +1145,6 @@ h2 {
   opacity: 0;
 }
 
-/* Hide letter-only controls in 4x6 label mode */
-.print-settings.label-mode label {
-  display: none;
-}
-
 /* Dim print settings until a label is selected */
 .print-settings.inactive {
   opacity: 0.42;
@@ -1341,10 +1266,6 @@ h2 {
     grid-column: 1;
   }
 
-  .settings-grid {
-    grid-template-columns: 1fr;
-  }
-
   .results {
     grid-template-columns: 1fr;
   }
@@ -1387,14 +1308,6 @@ h2 {
   .lab-panel,
   .crop-editor {
     grid-column: 1;
-  }
-
-  .settings-grid {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .settings-grid #saveSettings {
-    grid-column: 1 / -1;
   }
 
   .results {
