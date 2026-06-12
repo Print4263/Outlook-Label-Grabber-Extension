@@ -13,12 +13,12 @@
 <script src="../lib/ort.min.js"></script>
 <!-- Bump v= when comparing builds: python http.server + browser cache otherwise
      serve stale detection scripts after an edit. -->
-<script src="../detection/crop-engine.js?v=17"></script>
-<script src="../detection/model-detector.js?v=17"></script>
-<script src="../detection/label-detector.js?v=17"></script>
-<script src="../detection/pdf-processor.js?v=17"></script>
-<script src="../detection/png-processor.js?v=17"></script>
-<script src="../config.js?v=17"></script>
+<script src="../detection/crop-engine.js?v=20"></script>
+<script src="../detection/model-detector.js?v=20"></script>
+<script src="../detection/label-detector.js?v=20"></script>
+<script src="../detection/pdf-processor.js?v=20"></script>
+<script src="../detection/png-processor.js?v=20"></script>
+<script src="../config.js?v=20"></script>
 <script>
 window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
 
@@ -84,11 +84,22 @@ function outputRectInCorrectionSpace(candidate, pages, corrected) {
   const sw = Number(corrected.sourceWidth || 0);
   const sh = Number(corrected.sourceHeight || 0);
   const page = (pages || []).find((p) => p.pageIndex === candidate.pageIndex) || (pages || [])[0];
-  if (page?.canvas && page.canvas.width === sw && page.canvas.height === sh) {
+  // png-processor may upscale images now; corrections were drawn at the old
+  // native resolution. A uniform dimension ratio maps the output rect back.
+  const ratio = page?.canvas && sw && sh
+    && Math.abs(page.canvas.width / sw - page.canvas.height / sh) < 0.02 * (page.canvas.width / sw)
+    ? page.canvas.width / sw
+    : null;
+  if (ratio) {
     const rect = candidate.label?.sourceRect;
-    if (rect) return { rect, space: "page" };
+    if (rect) {
+      return {
+        rect: { x: rect.x / ratio, y: rect.y / ratio, width: rect.width / ratio, height: rect.height / ratio },
+        space: ratio === 1 ? "page" : "page-scaled"
+      };
+    }
     // No recorded rect (embedded/rotated label): if the label IS the page, full page.
-    if (candidate.label && candidate.label.width === sw && candidate.label.height === sh) {
+    if (candidate.label && Math.abs(candidate.label.width / sw - ratio) < 0.02) {
       return { rect: { x: 0, y: 0, width: sw, height: sh }, space: "page-full" };
     }
     return null;

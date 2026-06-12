@@ -1,18 +1,42 @@
 (function () {
   "use strict";
 
+  // Hairline label borders and dash patterns on phone screenshots are 1-2px
+  // at native resolution — at or under the border detectors' sampling steps.
+  // Upscaling to ~2700px wide makes them 3-4px, which measurably improves
+  // detection (2026-06-11 corpus test at 2.25x: +0.22 and +0.10 IoU on the
+  // two worst screenshot files, small gains on most others, ~+30% processing
+  // time on images only). This mirrors what converting the image to a PDF and
+  // letting pdf.js render it at scale 3 would do — same pixels, none of the
+  // encode/decode overhead, so images are normalized here instead.
+  // Target sized so phone screenshots (1080-1320px wide) land at ~2.3x — the
+  // factor the corpus test validated; at 2.0x the hairline dashes on the two
+  // worst screenshot files still go undetected.
+  const UPSCALE_TRIGGER_WIDTH = 2400;
+  const UPSCALE_TARGET_WIDTH = 3000;
+  const UPSCALE_MAX_FACTOR = 3;
+  const UPSCALE_MAX_PIXELS = 20000000;
+
   async function process(captured, pageIndex) {
     const imageBlob = await normalizeImageBlob(captured.blob, captured.type);
     const image = await blobToImage(imageBlob);
     const maxPixels = captured.type && /image\/gif/i.test(captured.type) ? 32000000 : 120000000;
     const naturalWidth = image.naturalWidth || image.width;
     const naturalHeight = image.naturalHeight || image.height;
-    const scale = Math.min(1, Math.sqrt(maxPixels / Math.max(1, naturalWidth * naturalHeight)));
+    let scale = Math.min(1, Math.sqrt(maxPixels / Math.max(1, naturalWidth * naturalHeight)));
+    if (naturalWidth * scale < UPSCALE_TRIGGER_WIDTH) {
+      const upscale = Math.min(
+        UPSCALE_MAX_FACTOR,
+        UPSCALE_TARGET_WIDTH / Math.max(1, naturalWidth * scale),
+        Math.sqrt(UPSCALE_MAX_PIXELS / Math.max(1, naturalWidth * naturalHeight * scale * scale))
+      );
+      scale *= Math.max(1, upscale);
+    }
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(naturalWidth * scale));
     canvas.height = Math.max(1, Math.round(naturalHeight * scale));
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    ctx.imageSmoothingEnabled = scale < 1;
+    ctx.imageSmoothingEnabled = scale !== 1;
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
 
