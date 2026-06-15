@@ -11,6 +11,8 @@ Chrome/Edge MV3 extension for grabbing and printing shipping labels from Outlook
 - **Ranks results intelligently:** 4×6-shaped crops surface first; pure packing-slip, invoice, and order-summary pages are pushed to the bottom so the label is always the top pick.
 - Detects labels placed sideways or rotated 90° and auto-orients them upright for correct 4×6 printing.
 - Handles labels embedded as full-page images, label pages with border detectors, and the ONNX YOLO model as a refinement layer.
+- **Reads the barcode on the grabbed label** fully on-device (zxing-wasm) — UPS 1Z, FedEx (PDF417 / Ground), and USPS IMpb (GS1) — and shows a **carrier + tracking-number badge** on the result; click the number to copy it. Carriers are check-digit validated where possible (jkeen `tracking_number_data`).
+- **The variant whose barcode decodes to a real tracking number is floated to the top automatically** — the actual shipping label becomes the selected, previewed, and printed pick.
 - Expands detected crop boxes outward to include barcodes and data-matrix codes that sit at the label's edge — nothing gets clipped.
 - Crops hug the actual label content: blank whitespace bands are trimmed to a small margin, so the printed label fills the sheet without dead space.
 - **Download Label keeps the open email open** — the reading view is restored after the download click; it no longer navigates back to the inbox.
@@ -57,18 +59,20 @@ The setting is saved per device only.
 | `app/downloads.js` | Recent-downloads list, intake, Use/Show/Clear/preview |
 | `app/crop.js` | Crop editor, auto-orient, rotate-to-portrait |
 | `app/detect.js` | Turns detector output into ranked candidates |
-| `detection/label-detector.js` | Full cascade + ranking (shape score, packing-slip penalty, carrier/barcode scoring) |
+| `detection/label-detector.js` | Full cascade + ranking (shape score, packing-slip penalty, carrier/barcode scoring, barcode-decode confirmation) |
+| `detection/barcode-decoder.js` | On-device barcode decode (zxing-wasm) → carrier + tracking-number classification, GS1/IMpb field parse |
 | `detection/pdf-processor.js` | pdf.js page render, cut-line detection, twin-split guard |
 | `detection/png-processor.js` | Image decode, upscale to ~3000 px for phone screenshots |
 | `detection/crop-engine.js` | White-trim, content rescue, gap clamp, orientation probe |
 | `detection/model-detector.js` | ONNX YOLO inference (fallback / refinement layer) |
 | `models/shipping-label.onnx` | On-device YOLO model (~10 MB) |
-| `lib/` | pdf.js, ONNX Runtime, heic2any |
+| `lib/` | pdf.js, ONNX Runtime, heic2any, zxing-wasm reader, ts-tracking-number bundle |
+| `config.js` | Upload limits, supported types, barcode-decode flags (`BARCODE.ENRICH` / `RERANK`) |
 | `background.js` | Service worker — event-driven only, no polling |
 | `outlook-reader.js` | Outlook content script — sender read, Download Label grab, reading-view restore |
 | `page-label-drag.js` | Drag-to-panel support |
 | `dev/test.html` | Training Studio entry point (not shipped) |
-| `dev/studio/` | Studio modules: pipeline runner, wins-by-detector stats, per-label trace log, 4×6 preview, fix-report export |
+| `dev/studio/` | Studio modules: pipeline runner, wins-by-detector stats, per-label trace log, 4×6 preview, fix-report export, barcode A/B compare |
 | `dev/fix-check.html` | IoU scoring harness — runs real pipeline vs. tagged corrections |
 
 ## Detection pipeline
@@ -83,6 +87,16 @@ The detector runs a deterministic cascade in priority order:
 
 Results are ranked by a composite score: label shape (4×6 gets a boost; extreme aspect ratios a penalty), barcode containment, carrier text, and packing-slip/invoice page penalty (−2 for pure order pages without label cues). The top candidate is presented first.
 
+## Carrier & tracking
+
+After ranking, the top candidate's barcode is decoded on-device (zxing-wasm) and classified:
+
+- **UPS** 1Z (Code128 / MaxiCode), **FedEx** (structured PDF417 + the 30–34 digit ship barcode → last-12 tracking), **USPS** IMpb (GS1 `(420)ZIP(94)…`), plus Amazon TBA and DHL.
+- Carriers are check-digit validated against the community `tracking_number_data` set when the code is a single clean tracking number; structured / multi-field codes (FedEx PDF417, USPS GS1) are parsed directly.
+- Dense codes that get lost in a full-page scan (FedEx PDF417, wide USPS IMpb) are re-read from a tight, native-resolution crop of each detected barcode region.
+- The result shows a **carrier + tracking badge** (click to copy), and the variant that decodes to a real tracking number is promoted to the top — the carrier's own barcode is the strongest evidence of the true label.
+- Controlled by `config.js` → `BARCODE`: `ENRICH` (on by default) stamps carrier/tracking metadata only and never changes which page is chosen; `RERANK` (off) lets a decoded carrier promote a near-tie candidate. Added latency is ~40 ms.
+
 ## Training Studio
 
 `dev/test.html` runs the real detection pipeline against a local folder of labels. It requires the extension to be loaded (ONNX and pdf.js workers need `chrome.runtime`). Features:
@@ -91,7 +105,9 @@ Results are ranked by a composite score: label shape (4×6 gets a boost; extreme
 - Wins-by-detector tally
 - Inline 4×6 preview at 203 DPI (landscape/oversize warnings)
 - Tagged fix-report export (category + note + corrected crop rect) → `dev/fix-report-current.json`
+- **Barcode A/B** — runs the set twice (barcode-decode off vs. on) and charts the delta: confident carriers, tracking numbers read, validated codes, and any reranks
 - `dev/fix-check.html` harness re-runs the pipeline and scores IoU of the top candidate's output vs. each correction
+- A `file://` guard warns when the studio is opened directly (pdf.js / ONNX can't load) — it must be served over http
 
 The training corpus (`dev/samples/`, `dev/fix-labels/`) and reports are gitignored (customer PII).
 
@@ -99,6 +115,7 @@ The training corpus (`dev/samples/`, `dev/fix-labels/`) and reports are gitignor
 
 - The ONNX model loads on first use, not at panel open.
 - Model inference scope is narrowed to pages with label-like candidates — on clean labels with a confident deterministic hit the model never runs.
+- Single-page PDFs detect **once**, not twice — a redundant in-`process()` detection pass that the caller always re-ran (and discarded) was removed, cutting ~30–45 % off single-label grabs (e.g. 1.65 s → 0.93 s) with identical results.
 - PNG/JPEG processing: upscale adds ~30% time on images only (was the fastest path); PDFs are unaffected.
 - All heavy work (pdf.js render, ONNX, pixel scans) runs in the popout's own renderer process — nothing in the extension can delay Outlook's inbox rendering or mail delivery.
 - The Outlook content script does nothing while the Outlook tab is hidden (catches up on tab focus).

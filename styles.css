@@ -1375,3 +1375,47 @@ h2 {
   border-radius: 999px;
   transition: width 0.9s linear;
 }
+
+/* Decoded carrier + tracking badge on a result card (barcode-decode confirmation). */
+.carrier-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 2px 0 8px;
+  padding: 6px 10px;
+  background: linear-gradient(180deg, #eef2ff, #e0e7ff);
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #1e293b;
+}
+.carrier-badge-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+.carrier-badge strong {
+  font-weight: 700;
+  color: #3730a3;
+  letter-spacing: 0.02em;
+}
+.carrier-badge-tracking {
+  font-family: "Consolas", "SFMono-Regular", ui-monospace, monospace;
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  color: #1e293b;
+  background: #fff;
+  border: 1px solid #c7d2fe;
+  border-radius: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.carrier-badge-tracking:hover {
+  border-color: #6366f1;
+  background: #f5f7ff;
+}
+.carrier-badge-valid {
+  font-weight: 800;
+  color: #047857;
+  cursor: default;
+}

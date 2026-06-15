@@ -139,6 +139,7 @@
     const sink = (evt) => { if (state._traceBuffer) state._traceBuffer.push(evt); };
     window.LabelExtractorDetector?.setTraceSink?.(sink);
     window.LabelExtractorModelDetector?.setTraceSink?.(sink);
+    window.LabelExtractorBarcode?.setTraceSink?.(sink);
   }
 
   // --- Pipeline (mirrors sidepanel.js runLocalDetector) ----------------------
@@ -161,6 +162,9 @@
     const candidates = await window.LabelExtractorDetector.detectAllPngCandidates([page]);
     return { candidates, page };
   }
+  // Exposed so the A/B compare module (ab-compare.js) can re-run the raw detector
+  // under different config flags without duplicating the PDF/PNG plumbing.
+  Studio.detect = detect;
 
   async function runOne(label, file, group = "") {
     const started = performance.now();

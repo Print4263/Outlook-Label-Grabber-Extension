@@ -787,6 +787,22 @@ function replaceExtension(name, ext) {
   return `${base}${ext}`;
 }
 
+// When the barcode decode identified a real carrier tracking number on a variant
+// (the one showing the 📦 carrier+tracking badge), that variant is almost
+// certainly the actual shipping label — float it to the top so it's the selected,
+// previewed, and printed one. Skip multi-label (twin) sheets, where every
+// candidate is a real label and their order is meaningful ("Label 1 of 2").
+function promoteTrackedLabel(candidates) {
+  if (!Array.isArray(candidates) || candidates.length < 2) return candidates;
+  if (getTwinLabelCount(candidates) > 1) return candidates;
+  const index = candidates.findIndex((label) => label && label.carrierConfident && label.trackingNumber);
+  if (index <= 0) return candidates;
+  const promoted = candidates.slice();
+  const [tracked] = promoted.splice(index, 1);
+  promoted.unshift(tracked);
+  return promoted;
+}
+
 async function extractSelectedFile() {
   if (!state.file) return;
   if (state.extractionInProgress) {
@@ -850,8 +866,8 @@ async function extractSelectedFile() {
         orientMs: Math.round(tOriented - tCandidates)
       }
     };
-    state.results = candidates;
-    state.selectedLabelIndex = candidates.length ? 0 : -1;
+    state.results = promoteTrackedLabel(candidates);
+    state.selectedLabelIndex = state.results.length ? 0 : -1;
     renderResults({ labels: state.results });
     updateSheetPreview();
     const twinCount = getTwinLabelCount(candidates);
@@ -977,7 +993,10 @@ function renderResults(payload) {
       }, { once: true });
     }
 
-    card.append(title, actions, preview, warnings, debugMeta);
+    const carrierBadge = makeCarrierBadge(label);
+    card.append(title);
+    if (carrierBadge) card.append(carrierBadge);
+    card.append(actions, preview, warnings, debugMeta);
     if (index === state.selectedLabelIndex) card.classList.add("selected");
     els.results.append(card);
   });
@@ -1013,6 +1032,53 @@ function visibleWarnings(label) {
 
 function isTechnicalFallbackWarning(warning) {
   return /fallback result|source page|text-based pdf|embedded pdf/i.test(String(warning || ""));
+}
+
+// A staff-visible carrier + tracking badge built from the decoded barcode. Shows
+// only when the barcode-decode confirmation actually read a carrier code off this
+// crop (carrierConfident) or extracted a tracking number — a bare text-guessed
+// carrier with no number stays out of the way. The ✓ marks a check-digit-validated
+// number; the tracking number copies to the clipboard on click.
+function makeCarrierBadge(label) {
+  const tracking = String(label.trackingNumber || "").trim();
+  const carrier = String(label.carrier || "").trim();
+  const confident = label.carrierConfident && carrier && carrier !== "Model";
+  if (!tracking && !confident) return null;
+
+  const badge = document.createElement("div");
+  badge.className = "carrier-badge";
+
+  const icon = document.createElement("span");
+  icon.className = "carrier-badge-icon";
+  icon.textContent = "📦";
+  const carrierEl = document.createElement("strong");
+  carrierEl.textContent = carrier && carrier !== "Model" ? carrier : "Barcode";
+  badge.append(icon, carrierEl);
+
+  if (tracking) {
+    const trk = document.createElement("button");
+    trk.type = "button";
+    trk.className = "carrier-badge-tracking";
+    trk.textContent = tracking;
+    trk.title = "Click to copy tracking number";
+    trk.addEventListener("click", () => {
+      navigator.clipboard?.writeText(tracking).then(
+        () => setStatus(`Copied tracking ${tracking}`),
+        () => {}
+      );
+    });
+    badge.append(trk);
+  }
+
+  if (label.carrierValidated) {
+    const check = document.createElement("span");
+    check.className = "carrier-badge-valid";
+    check.textContent = "✓";
+    check.title = "Check-digit validated";
+    badge.append(check);
+  }
+
+  return badge;
 }
 
 function labDiagnosticTags(label) {

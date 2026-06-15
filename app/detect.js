@@ -36,6 +36,12 @@ function localDetectionToLabel(result) {
 
   const label = {
     carrier: result.carrier || "Model",
+    // Barcode-decode metadata (present only when the decode confirmation ran and
+    // read a carrier barcode off this crop). Surfaced as a badge in renderResults.
+    trackingNumber: result.trackingNumber || "",
+    trackingUrl: result.trackingUrl || "",
+    carrierConfident: Boolean(result.carrierConfident),
+    carrierValidated: Boolean(result.carrierValidated),
     confidence: Math.min(0.99, Number(result.confidence || 0)),
     outputMimeType: "image/png",
     sourceCanvas: source.canvas || null,

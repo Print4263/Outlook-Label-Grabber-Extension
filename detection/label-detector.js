@@ -121,7 +121,7 @@
       // candidates computed so far: when the strong hit boxes the wrong region
       // (e.g. a dashed frame around instructions + label), the picker still
       // offers the alternatives instead of a single take-it-or-leave-it crop.
-      return rankedEarly;
+      return await confirmBarcodeSignal(rankedEarly, pages);
     }
 
     const modelScope = modelInferencePageScope(candidates, pages);
@@ -175,7 +175,7 @@
       stage("single-page-pdf");
     }
 
-    const ranked = rankedDetections(candidates, pages);
+    const ranked = await confirmBarcodeSignal(rankedDetections(candidates, pages), pages);
     traceRanked(ranked);
     return ranked;
   }
@@ -194,6 +194,167 @@
         breakdown: scoreBreakdown(c)
       }))
     });
+  }
+
+  // ── Barcode-decode confirmation (Phase 1, config-gated) ────────────────────
+  //
+  // The cascade ranks on barcode DENSITY (findBarcodeRegions) but never decodes.
+  // This optional pass actually reads the winning crop's barcode with zxing and
+  //   (a) ENRICH  stamps the check-digit-validated carrier + tracking number +
+  //               GS1 fields onto the candidate — pure metadata, no reordering;
+  //   (b) RERANK  if the top candidate carries no confident carrier barcode but a
+  //               near-tie candidate does, promotes the one that decodes to a real
+  //               carrier (rejects a packing-slip crop whose only code is an order
+  //               number).
+  // Both are OFF by default (LabelExtractorConfig.BARCODE), so the verified
+  // ranking and the production latency budget are untouched unless a run opts in
+  // — which is exactly what the training studio does to measure the benefit.
+  function barcodeConfig() {
+    const cfg = (typeof LabelExtractorConfig !== "undefined" && LabelExtractorConfig.BARCODE) || null;
+    return cfg && (cfg.ENRICH || cfg.RERANK) ? cfg : null;
+  }
+
+  async function decodeCandidate(candidate, pages) {
+    const decoder = window.LabelExtractorBarcode;
+    if (!decoder || !candidate) return [];
+    const page = findPage(candidate.pages || pages || [], candidate.pageIndex);
+    const target = candidate.sourceCanvas || page?.canvas;
+    if (!target) return [];
+    // Embedded labels are their own canvas (decode the whole thing); rect-backed
+    // detections decode just the crop region in source-canvas pixels.
+    const rect = candidate.sourceCanvas ? null : candidate.cropRect || null;
+    try {
+      // 1) Whole-crop decode — fast, and reads big UPS MaxiCode / 1Z Code128.
+      const whole = await decoder.decode(target, rect ? { rect } : {});
+      if (decoder.isCarrierLabelSignal(whole)) return whole;
+      // 2) No carrier signal yet — FedEx PDF417 and USPS IMpb are small, dense,
+      //    and get lost in a full-page scan. Re-try on tight, padded crops around
+      //    each detected barcode region (reusing the cascade's findBarcodeRegions).
+      const regional = await decodeBarcodeRegions(decoder, target, rect);
+      return regional.length ? regional : whole;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  // Decode each detected barcode CLUSTER on its own tight crop at FULL source
+  // resolution. The whole-crop pass downsamples (fast, fine for a 1D UPS 1Z) but
+  // destroys a dense FedEx PDF417 or a wide USPS IMpb; a small region bbox stays
+  // sharp AND cheap at native pixels (maxDim large = no downscale). The grid from
+  // findBarcodeRegions is memoized, so this only costs the decodes themselves, and
+  // only runs when the whole-crop pass found no carrier barcode.
+  const REGION_FORMATS = ["Code128", "PDF417", "DataMatrix", "Code39", "ITF"];
+
+  async function decodeBarcodeRegions(decoder, canvas, rect) {
+    let regions = findBarcodeRegions(canvas);
+    if (rect) {
+      regions = regions.filter((region) => {
+        const cx = region.x + region.width / 2;
+        const cy = region.y + region.height / 2;
+        return cx >= rect.x && cx <= rect.x + rect.width && cy >= rect.y && cy <= rect.y + rect.height;
+      });
+    }
+    if (!regions.length) return [];
+    // Merge adjacent grid cells into whole-barcode clusters so one PDF417 / IMpb
+    // isn't sliced down the middle, then decode the strongest few at native res.
+    const clusters = clusterBarcodeRegions(regions).slice(0, 3);
+    const all = [];
+    const seen = new Set();
+    for (const cluster of clusters) {
+      const box = expandRect(cluster, canvas, 0.3); // include the quiet zone
+      let results;
+      try { results = await decoder.decode(canvas, { rect: box, formats: REGION_FORMATS, maxDim: 4000 }); }
+      catch (_) { results = []; }
+      for (const r of results) { if (!seen.has(r.text)) { seen.add(r.text); all.push(r); } }
+      if (decoder.isCarrierLabelSignal(all)) break;
+    }
+    return all;
+  }
+
+  // Connected-component merge of barcode grid cells: cells whose boxes touch (or
+  // sit within a small gap) belong to the same physical barcode. Returns each
+  // cluster's bounding box with the summed cell score, strongest first.
+  function clusterBarcodeRegions(regions) {
+    const used = new Array(regions.length).fill(false);
+    const adjacent = (a, b) => {
+      const gapX = Math.max(a.x, b.x) - Math.min(a.x + a.width, b.x + b.width);
+      const gapY = Math.max(a.y, b.y) - Math.min(a.y + a.height, b.y + b.height);
+      const tol = 0.6 * Math.min(a.width, a.height, b.width, b.height);
+      return gapX <= tol && gapY <= tol;
+    };
+    const clusters = [];
+    for (let i = 0; i < regions.length; i += 1) {
+      if (used[i]) continue;
+      used[i] = true;
+      const members = [regions[i]];
+      const stack = [i];
+      while (stack.length) {
+        const k = stack.pop();
+        for (let j = 0; j < regions.length; j += 1) {
+          if (!used[j] && adjacent(regions[k], regions[j])) { used[j] = true; stack.push(j); members.push(regions[j]); }
+        }
+      }
+      const bbox = unionRects(members);
+      bbox.score = members.reduce((sum, m) => sum + Number(m.score || 0), 0);
+      clusters.push(bbox);
+    }
+    return clusters.sort((a, b) => b.score - a.score);
+  }
+
+  function applyBarcodeMetadata(candidate, results) {
+    const decoder = window.LabelExtractorBarcode;
+    const best = decoder.bestCarrierResult(results);
+    candidate.barcodeFormats = results.map((r) => r.format);
+    candidate.barcodeSignal = decoder.isCarrierLabelSignal(results);
+    if (best) {
+      if (best.carrier) candidate.carrier = best.carrier;
+      if (best.trackingNumber) candidate.trackingNumber = best.trackingNumber;
+      if (best.trackingUrl) candidate.trackingUrl = best.trackingUrl;
+      candidate.carrierConfident = Boolean(best.carrierConfident);
+      candidate.carrierValidated = Boolean(best.validated);
+    }
+    return best;
+  }
+
+  async function confirmBarcodeSignal(ranked, pages) {
+    const cfg = barcodeConfig();
+    const decoder = window.LabelExtractorBarcode;
+    if (!cfg || !decoder || !ranked.length) return ranked;
+
+    const top = ranked[0];
+    const topResults = await decodeCandidate(top, pages);
+    if (cfg.ENRICH) applyBarcodeMetadata(top, topResults);
+    const topSignal = decoder.isCarrierLabelSignal(topResults);
+    trace("barcode-confirm", {
+      reason: top.reason || "",
+      carrier: top.carrier || "",
+      carrierSignal: topSignal,
+      formats: topResults.map((r) => r.format)
+    });
+
+    if (!cfg.RERANK || topSignal) return ranked;
+
+    // Top crop decoded no confident carrier barcode — scan near-tie candidates
+    // for one that does, and promote it.
+    const topScore = detectionRankScore(top);
+    const scoreWindow = Number(cfg.RERANK_SCORE_WINDOW || 1.5);
+    for (let i = 1; i < ranked.length && i < 4; i += 1) {
+      const candidate = ranked[i];
+      if (topScore - detectionRankScore(candidate) > scoreWindow) break;
+      const results = await decodeCandidate(candidate, pages);
+      if (cfg.ENRICH) applyBarcodeMetadata(candidate, results);
+      if (decoder.isCarrierLabelSignal(results)) {
+        trace("barcode-rerank", {
+          promotedReason: candidate.reason,
+          promotedCarrier: candidate.carrier || "",
+          overReason: top.reason,
+          scoreGap: Number((topScore - detectionRankScore(candidate)).toFixed(3)),
+          note: "near-tie candidate with a confident carrier barcode promoted over a top crop that decoded none"
+        });
+        return [candidate, ...ranked.filter((c) => c !== candidate)];
+      }
+    }
+    return ranked;
   }
 
   function rankedDetections(candidates, pages) {
@@ -424,7 +585,7 @@
     // Same ranking pipeline as the PDF path — without it, images never get
     // model-over-border promotion, so a screenshot whose solid border wraps
     // the whole phone screen beat the model's label box every time.
-    const ranked = rankedDetections(candidates, pages);
+    const ranked = await confirmBarcodeSignal(rankedDetections(candidates, pages), pages);
     traceRanked(ranked);
     return ranked;
   }

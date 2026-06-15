@@ -37,7 +37,6 @@
 
   const MAX_TEXT_PAGES = 20;
   const MAX_RENDER_PAGES = 6;
-  const STRONG_DETECTION_CONFIDENCE = 0.93;
   const TWIN_LABEL_MIN_BAND_RATIO = 0.18;
   const TWIN_LABEL_ACTIVE_RATIO = 0.018;
 
@@ -291,16 +290,13 @@
       // --- Step 3: render the best text match first; only stop early for single-page PDFs.
       const pages = [];
       if (renderQueue.length) {
+        // Render the best-scoring page first. We do NOT detect here: the caller
+        // runs detectPdfCandidates on these pages, and a former single-page
+        // "firstPass" (detectPdfPages) ran the entire cascade + ONNX yet its result
+        // carries a .pages field that sends the caller straight back into
+        // detectPdfCandidates — re-detecting and discarding the firstPass. So it
+        // was pure double work (~600ms of ONNX) on every single-page PDF. Removed.
         pages.push(await renderPageEntry(renderQueue[0], pdf.numPages));
-        // A single-page PDF has nothing more to render, so a confident hit here
-        // lets us return immediately. (firstPass is only meaningful for one-page
-        // docs — running it for multi-page PDFs just wastes a detection pass.)
-        if (pdf.numPages === 1) {
-          const firstPass = await window.LabelExtractorDetector.detectPdfPages(pages);
-          if (Number(firstPass?.confidence || 0) >= STRONG_DETECTION_CONFIDENCE) {
-            return firstPass;
-          }
-        }
       }
 
       for (const entry of renderQueue.slice(1)) {
