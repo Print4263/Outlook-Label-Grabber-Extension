@@ -244,6 +244,13 @@
   // findBarcodeRegions is memoized, so this only costs the decodes themselves, and
   // only runs when the whole-crop pass found no carrier barcode.
   const REGION_FORMATS = ["Code128", "PDF417", "DataMatrix", "Code39", "ITF"];
+  // [BANKAI] Bounds so the region fallback can never hang on image-heavy sheets
+  // (e.g. UPS View/Print, where dense fold-rules/instructions look barcode-like):
+  // cap each decode's resolution, skip clusters too big to be a real barcode, and
+  // time-budget the whole loop. Normal barcode regions are well under these.
+  const REGION_MAX_DIM = 2000;          // PDF417/IMpb native regions decode fine here
+  const REGION_MAX_AREA_RATIO = 0.5;    // a barcode is a band/block, not half the crop
+  const REGION_DECODE_BUDGET_MS = 500;  // total wall-clock for the whole fallback
 
   async function decodeBarcodeRegions(decoder, canvas, rect) {
     let regions = findBarcodeRegions(canvas);
@@ -256,14 +263,22 @@
     }
     if (!regions.length) return [];
     // Merge adjacent grid cells into whole-barcode clusters so one PDF417 / IMpb
-    // isn't sliced down the middle, then decode the strongest few at native res.
-    const clusters = clusterBarcodeRegions(regions).slice(0, 3);
+    // isn't sliced down the middle. Drop clusters too large to be a barcode (dense
+    // content on instruction sheets — slow to decode and never a carrier), then
+    // decode the strongest few within a wall-clock budget.
+    const canvasArea = Math.max(1, canvas.width * canvas.height);
+    const clusters = clusterBarcodeRegions(regions)
+      .filter((c) => (c.width * c.height) / canvasArea <= REGION_MAX_AREA_RATIO)
+      .slice(0, 3);
     const all = [];
     const seen = new Set();
+    const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+    const start = now();
     for (const cluster of clusters) {
+      if (now() - start > REGION_DECODE_BUDGET_MS) break;
       const box = expandRect(cluster, canvas, 0.3); // include the quiet zone
       let results;
-      try { results = await decoder.decode(canvas, { rect: box, formats: REGION_FORMATS, maxDim: 4000 }); }
+      try { results = await decoder.decode(canvas, { rect: box, formats: REGION_FORMATS, maxDim: REGION_MAX_DIM }); }
       catch (_) { results = []; }
       for (const r of results) { if (!seen.has(r.text)) { seen.add(r.text); all.push(r); } }
       if (decoder.isCarrierLabelSignal(all)) break;
@@ -316,6 +331,45 @@
     return best;
   }
 
+  // [BANKAI] #3 barcode-anchored card crop. On a phone SCREENSHOT/PHOTO the detector
+  // box often also catches the status bar / URL bar / app nav chrome stacked above and
+  // below the label. When such a crop holds a confident carrier barcode, tighten it to
+  // the label card. Gated to image pages (never PDFs — clean carrier sheets already crop
+  // tight); refineCardWithinRect only commits a trim that lands closer to a real 4x6,
+  // so it is a safe no-op on anything it can't improve. The crop image is regenerated
+  // with a straight pixel copy (see below for why, not content-aware cropPageCanvas).
+  async function maybeRefineCard(candidate, pages) {
+    if (!candidate || !candidate.barcodeSignal || !candidate.cropRect) return;
+    const page = findPage(candidate.pages || pages, candidate.pageIndex);
+    if (!page || page.type !== "png" || !page.canvas) return;
+    const r = candidate.cropRect;
+    const refined = window.LabelExtractorCrop.refineCardWithinRect(page.canvas, r);
+    if (!refined || (refined.x === r.x && refined.y === r.y && refined.width === r.width && refined.height === r.height)) return;
+    try {
+      // Crop EXACTLY to the refined card. Do NOT route through cropPageCanvas — its
+      // content-aware extendThroughContent walks back outward and re-absorbs the very
+      // chrome (status/URL bar) we just trimmed. The profile method already bounded
+      // the card precisely, so a straight pixel copy is what we want.
+      const rc = document.createElement("canvas");
+      rc.width = Math.max(1, Math.round(refined.width));
+      rc.height = Math.max(1, Math.round(refined.height));
+      const rx = rc.getContext("2d", { willReadFrequently: true });
+      rx.fillStyle = "#fff";
+      rx.fillRect(0, 0, rc.width, rc.height);
+      rx.drawImage(page.canvas, Math.round(refined.x), Math.round(refined.y), rc.width, rc.height, 0, 0, rc.width, rc.height);
+      const label = window.LabelExtractorCrop.canvasToLabel(rc);
+      candidate.cropRect = refined;
+      candidate.label = label;
+      candidate.cardRefined = true;
+      trace("card-refine", {
+        reason: candidate.reason || "",
+        carrier: candidate.carrier || "",
+        from: [Math.round(r.width), Math.round(r.height)].join("x"),
+        to: [Math.round(refined.width), Math.round(refined.height)].join("x")
+      });
+    } catch (_) { /* keep the original crop on any failure */ }
+  }
+
   async function confirmBarcodeSignal(ranked, pages) {
     const cfg = barcodeConfig();
     const decoder = window.LabelExtractorBarcode;
@@ -332,7 +386,10 @@
       formats: topResults.map((r) => r.format)
     });
 
-    if (!cfg.RERANK || topSignal) return ranked;
+    if (!cfg.RERANK || topSignal) {
+      if (topSignal) await maybeRefineCard(top, pages);
+      return ranked;
+    }
 
     // Top crop decoded no confident carrier barcode — scan near-tie candidates
     // for one that does, and promote it.
@@ -351,6 +408,7 @@
           scoreGap: Number((topScore - detectionRankScore(candidate)).toFixed(3)),
           note: "near-tie candidate with a confident carrier barcode promoted over a top crop that decoded none"
         });
+        await maybeRefineCard(candidate, pages);
         return [candidate, ...ranked.filter((c) => c !== candidate)];
       }
     }

@@ -762,6 +762,77 @@
     return Math.max(min, Math.min(max, value));
   }
 
+  // [BANKAI] Tighten a detector crop down to the label "card" when the box also
+  // grabbed phone/app chrome (status bar, URL bar, nav bar) around a SCREENSHOT or
+  // PHOTO of a label. The label always holds the densest dark band (its primary
+  // barcode), so anchor on that row and bound the card by the LARGEST background gap
+  // above and below it. A fixed gap threshold can't separate the card-to-chrome gap
+  // from internal label whitespace (measured: boundary gaps 186–1263px overlap
+  // internal gaps up to 315px) — but "largest gap on each side of the barcode" can,
+  // and the barcode row itself is never cut. Vertical-only: phone over-crop is chrome
+  // stacked above/below; the card already spans the box width. Returns a tightened
+  // rect, or the INPUT rect unchanged whenever the result wouldn't be a clearer 4x6,
+  // so a bad guess can never make the crop worse.
+  const CARD_DARK_LUM = 120;
+  const LABEL_ASPECTS = [2 / 3, 3 / 2]; // 4x6 portrait / landscape
+  function refineCardWithinRect(canvas, rect) {
+    const data = pixelsFor(canvas);
+    const W = canvas.width, H = canvas.height;
+    const x0 = clamp(Math.round(rect.x), 0, W - 1);
+    const x1 = clamp(Math.round(rect.x + rect.width), x0 + 1, W);
+    const y0 = clamp(Math.round(rect.y), 0, H - 1);
+    const y1 = clamp(Math.round(rect.y + rect.height), y0 + 1, H);
+    const rw = x1 - x0, rh = y1 - y0;
+    if (rh < 80 || rw < 40) return rect;
+
+    // Per-row dark fraction across the box width; the densest row is the barcode.
+    const xs = Math.max(1, Math.floor(rw / 240));
+    const prof = new Float32Array(rh);
+    let peak = 0, peakRow = 0;
+    for (let r = 0; r < rh; r += 1) {
+      const base = (y0 + r) * W;
+      let dark = 0, n = 0;
+      for (let x = x0; x < x1; x += xs) {
+        const i = (base + x) * 4;
+        if (data[i + 3] < 16) continue;
+        n += 1;
+        if (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2] < CARD_DARK_LUM) dark += 1;
+      }
+      const f = n ? dark / n : 0;
+      prof[r] = f;
+      if (f > peak) { peak = f; peakRow = r; }
+    }
+
+    // Largest sustained background band above the anchor → card top; below → bottom.
+    const ACTIVE = 0.006;
+    const minGap = Math.max(24, Math.round(rh * 0.02));
+    let top = 0, bottom = rh, bestAbove = 0, bestBelow = 0;
+    let s = -1;
+    for (let r = 0; r <= rh; r += 1) {
+      const inactive = r < rh ? prof[r] < ACTIVE : true;
+      if (inactive) { if (s < 0) s = r; continue; }
+      if (s >= 0) {
+        const len = r - s;
+        if (len >= minGap) {
+          if (r <= peakRow && len > bestAbove) { bestAbove = len; top = r; }
+          else if (s >= peakRow && len > bestBelow) { bestBelow = len; bottom = s; }
+        }
+        s = -1;
+      }
+    }
+
+    if (top <= 0 && bottom >= rh) return rect; // nothing to trim
+    const newH = bottom - top;
+    if (newH < rh * 0.4) return rect; // refuse: too aggressive to trust
+
+    // Accept only if the trimmed box sits CLOSER to a real 4x6 aspect than the
+    // original — this rejects pathological band-crops (a thin strip scores worse).
+    const dist = (a) => Math.min(Math.abs(a - LABEL_ASPECTS[0]), Math.abs(a - LABEL_ASPECTS[1]));
+    if (dist(rw / newH) >= dist(rw / rh)) return rect;
+
+    return { x: rect.x, y: y0 + top, width: rect.width, height: newH };
+  }
+
   window.LabelExtractorCrop = {
     autoCropCanvas,
     cropCanvas,
@@ -773,6 +844,7 @@
     eraseFaintRules,
     detectUprightFlip,
     barcodeBandStats,
+    refineCardWithinRect,
     // Band mass below this is too weak to trust for orientation decisions.
     FLIP_MIN_MASS,
     pixelsFor

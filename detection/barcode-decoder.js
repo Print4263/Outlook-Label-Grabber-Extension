@@ -86,6 +86,25 @@
     return zxingLoadPromise;
   }
 
+  // ts-tracking-number (the carrier check-digit validator, ~127 KB) is a separate
+  // bundle. Like zxing, load it on first decode instead of at panel open — WITHOUT
+  // it globalThis.TrackingNumber is undefined, so validatedCarrier() always returns
+  // null and every carrier falls to the signature tier (confident "•") instead of
+  // check-digit validated ("✓"). Soft-fails: a load error just leaves "•" in place.
+  let trackingLoadPromise = null;
+  function ensureTrackingLib() {
+    if (globalThis.TrackingNumber) return Promise.resolve();
+    if (trackingLoadPromise) return trackingLoadPromise;
+    trackingLoadPromise = new Promise((resolve) => {
+      const script = document.createElement("script");
+      script.src = assetUrl("lib/tracking-number.js");
+      script.onload = () => { trace("tracking-lib", { loaded: true }); resolve(); };
+      script.onerror = () => { trackingLoadPromise = null; trace("tracking-lib", { loaded: false }); resolve(); };
+      document.head.append(script);
+    });
+    return trackingLoadPromise;
+  }
+
   // Labels are white; phone screenshots / pasted PNGs occasionally carry an alpha
   // channel where transparent pixels read as black and wipe out the bars. Flatten
   // onto white before decoding. No-op (and no allocation) when already opaque.
@@ -214,6 +233,25 @@
   }
 
   function classifyCarrier(text, format) {
+    const result = classifyCarrierBase(text, format);
+    // Check-digit upgrade: USPS IMpb (GS1) and FedEx codes never pass their raw
+    // multi-field text to the validator, but their EXTRACTED tracking number does.
+    // Upgrade a confident "•" to validated "✓" when ts-tracking confirms the same
+    // carrier on the extracted number. (UPS 1Z already validates via Tier 1.)
+    if (result.carrier && result.confident && !result.validated && result.trackingNumber) {
+      const clean = String(result.trackingNumber).replace(/\s+/g, "").toUpperCase();
+      if (/^[0-9A-Z]{8,26}$/.test(clean)) {
+        const v = validatedCarrier(clean);
+        if (v && v.carrier === result.carrier) {
+          result.validated = true;
+          if (!result.trackingUrl) result.trackingUrl = v.trackingUrl;
+        }
+      }
+    }
+    return result;
+  }
+
+  function classifyCarrierBase(text, format) {
     const raw = String(text || "");
     const t = raw.replace(/\s+/g, "").toUpperCase();
 
@@ -382,6 +420,9 @@
       trace("barcode-decode", { ok: false, error: String(err && err.message || err) });
       return [];
     }
+    // Load the validator only when there's a barcode to classify, so confident
+    // carriers can be check-digit validated ("✓") rather than signature-only ("•").
+    if (raw && raw.length) await ensureTrackingLib();
     const results = normalizeResults(raw);
     trace("barcode-decode", {
       ok: true,
