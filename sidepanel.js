@@ -652,6 +652,10 @@ async function handleDrop(event) {
   const file = firstDroppedFile(transfer);
   if (file) {
     setFile(file);
+    // Auto-extract on drop — staff shouldn't have to find the Extract button as a
+    // separate next step. (The dropped-URL path below already auto-extracts via
+    // loadContextLabel*; this matches it for a dropped File / dragged image.)
+    await extractSelectedFile();
     return;
   }
 
@@ -670,7 +674,8 @@ async function useDownloadedId(id) {
     setStatus("Recent download was not found anymore.");
     return;
   }
-  await useDownloadedFile(matches[0]);
+  // Dragging a recent-download row onto the panel auto-extracts too.
+  await useDownloadedFile(matches[0], { extractAfterLoad: true });
 }
 
 function firstDroppedFile(transfer) {
