@@ -332,12 +332,12 @@
   }
 
   // [BANKAI] #3 barcode-anchored card crop. On a phone SCREENSHOT/PHOTO the detector
-  // box often also catches the status bar / URL bar / app nav chrome stacked above and
-  // below the label. When such a crop holds a confident carrier barcode, tighten it to
-  // the label card. Gated to image pages (never PDFs — clean carrier sheets already crop
-  // tight); refineCardWithinRect only commits a trim that lands closer to a real 4x6,
-  // so it is a safe no-op on anything it can't improve. The crop image is regenerated
-  // with a straight pixel copy (see below for why, not content-aware cropPageCanvas).
+  // box often also catches app chrome around the label. When such a crop holds a
+  // confident carrier barcode, tighten it to the label card. Gated to image pages
+  // (never PDFs — clean carrier sheets already crop tight); refineCardWithinRect only
+  // commits a trim that lands closer to a real 4x6, so it is a safe no-op on anything
+  // it can't improve. The crop image is regenerated with a straight pixel copy (see
+  // below for why, not content-aware cropPageCanvas).
   async function maybeRefineCard(candidate, pages) {
     if (!candidate || !candidate.barcodeSignal || !candidate.cropRect) return;
     const page = findPage(candidate.pages || pages, candidate.pageIndex);
@@ -358,12 +358,14 @@
       rx.fillRect(0, 0, rc.width, rc.height);
       rx.drawImage(page.canvas, Math.round(refined.x), Math.round(refined.y), rc.width, rc.height, 0, 0, rc.width, rc.height);
       const label = window.LabelExtractorCrop.canvasToLabel(rc);
-      candidate.cropRect = refined;
+      candidate.cropRect = { x: refined.x, y: refined.y, width: refined.width, height: refined.height };
       candidate.label = label;
       candidate.cardRefined = true;
+      candidate.cardRefineAxis = refined.axis || "vertical";
       trace("card-refine", {
         reason: candidate.reason || "",
         carrier: candidate.carrier || "",
+        axis: candidate.cardRefineAxis,
         from: [Math.round(r.width), Math.round(r.height)].join("x"),
         to: [Math.round(refined.width), Math.round(refined.height)].join("x")
       });
