@@ -1362,24 +1362,12 @@
   function withCarrierMetadata(result, pages) {
     if (!result) return result;
     const page = pages && findPage(pages, result.pageIndex || 0);
-    const carrier = guessCarrier(page && page.text);
+    const carrier = window.LabelExtractorCarrier?.guessCarrier(page && page.text, {
+      includeGenericNumbers: true,
+      includeMarketplaces: true
+    }) || "";
     if (carrier) result.carrier = carrier;
     return result;
-  }
-
-  function guessCarrier(text) {
-    const value = String(text || "").toUpperCase();
-    if (!value) return "";
-    if (/\b1Z[0-9A-Z]{16}\b/.test(value) || /\bUPS\b|UPS TRACKING|UPS GROUND/.test(value)) return "UPS";
-    if (/\b(9\d{21,}|92\d{20,})\b/.test(value) || /USPS|POSTAL SERVICE|PRIORITY MAIL|GROUND ADVANTAGE/.test(value)) return "USPS";
-    if (/\b(\d{12}|\d{15}|\d{20})\b/.test(value) || /FEDEX|FEDERAL EXPRESS/.test(value)) return "FedEx";
-    if (/DHL|EXPRESS WORLDWIDE/.test(value)) return "DHL";
-    if (/AMAZON|RETURN MAILING LABEL/.test(value)) return "Amazon";
-    if (/SHIPSTATION/.test(value)) return "ShipStation";
-    if (/PIRATE SHIP/.test(value)) return "Pirate Ship";
-    if (/EBAY/.test(value)) return "eBay";
-    if (/ETSY/.test(value)) return "Etsy";
-    return "";
   }
 
   async function keywordDetection(pages) {
@@ -2267,7 +2255,10 @@
     // Dev training studio hooks (no-op in production — traceSink stays null):
     setTraceSink,
     clearTrace,
-    guessCarrier,
+    guessCarrier: (text) => window.LabelExtractorCarrier?.guessCarrier(text, {
+      includeGenericNumbers: true,
+      includeMarketplaces: true
+    }) || "",
     detectionRankScore,
     scoreBreakdown
   };

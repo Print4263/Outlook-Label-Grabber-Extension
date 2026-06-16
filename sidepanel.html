@@ -18,11 +18,16 @@
       <div class="topbar-actions">
         <button id="reprintButton" type="button" hidden title="Print the last label again">Reprint last</button>
         <button id="popoutButton" type="button" title="Open in standalone window">Pop out</button>
-        <button id="resetLayoutButton" type="button" title="Reset saved popout position">Reset layout</button>
       </div>
     </header>
 
     <div id="alertBanner" class="alert-banner" hidden></div>
+    <div id="dropOverlay" class="drop-overlay" hidden>
+      <div class="drop-overlay-panel">
+        <strong>Drop label to extract</strong>
+        <span>PDF or image</span>
+      </div>
+    </div>
 
     <section class="download-label-panel">
       <button id="grabOutlookAttachment" type="button">Download Label</button>
@@ -105,14 +110,6 @@
       <p id="debugReportStatus">Debug report includes file, pages, candidates, confidence, fallback state, and print mode.</p>
     </section>
 
-    <details class="drop-zone-disclosure">
-      <summary>Choose file manually</summary>
-      <section id="dropZone" class="drop-zone" tabindex="0">
-        <input id="fileInput" type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,application/pdf,image/png,image/jpeg,image/gif,image/webp,image/heic,image/heif" hidden>
-        <button id="pickFile" type="button">Choose file</button>
-      </section>
-    </details>
-
     <section class="file-row">
       <div>
         <span class="label">Selected file</span>
@@ -136,25 +133,41 @@
       </section>
     </details>
 
-    <details class="display-settings-disclosure">
-      <summary><strong>Display size</strong><span id="uiScaleSummary" class="display-settings-summary-value">100%</span></summary>
-      <section class="display-settings">
-        <button id="uiScaleDown" type="button" class="ui-scale-step" title="Smaller">&minus;</button>
-        <input id="uiScaleRange" type="range" min="50" max="110" step="5" value="100" aria-label="Display size">
-        <button id="uiScaleUp" type="button" class="ui-scale-step" title="Larger">+</button>
-        <span id="uiScaleValue">100%</span>
-        <button id="uiScaleReset" type="button" title="Auto-fit to this window">Fit</button>
-      </section>
-    </details>
+    <details class="advanced-controls">
+      <summary><strong>Advanced</strong></summary>
+      <div class="advanced-controls-body">
+        <details class="drop-zone-disclosure">
+          <summary>Manual file</summary>
+          <section id="dropZone" class="drop-zone" tabindex="0">
+            <input id="fileInput" type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,application/pdf,image/png,image/jpeg,image/gif,image/webp,image/heic,image/heif" hidden>
+            <button id="pickFile" type="button">Choose file</button>
+          </section>
+        </details>
 
-    <section class="mode-panel">
-      <button id="modeToggle" type="button" title="Show lab tools and debug details">Lab mode</button>
-    </section>
+        <details class="display-settings-disclosure">
+          <summary><strong>Display size</strong><span id="uiScaleSummary" class="display-settings-summary-value">100%</span></summary>
+          <section class="display-settings">
+            <button id="uiScaleDown" type="button" class="ui-scale-step" title="Smaller">&minus;</button>
+            <input id="uiScaleRange" type="range" min="50" max="110" step="5" value="100" aria-label="Display size">
+            <button id="uiScaleUp" type="button" class="ui-scale-step" title="Larger">+</button>
+            <span id="uiScaleValue">100%</span>
+            <button id="uiScaleReset" type="button" title="Auto-fit to this window">Fit</button>
+          </section>
+        </details>
+
+        <section class="mode-panel">
+          <button id="modeToggle" type="button" title="Show lab tools and debug details">Lab mode</button>
+          <button id="resetLayoutButton" type="button" title="Reset saved popout position">Reset layout</button>
+        </section>
+      </div>
+    </details>
   </main>
 
   <!-- lib/pdf.min.js is loaded on demand by detection/pdf-processor.js (lazy) -->
   <!-- lib/ort.min.js is loaded on demand by model-detector.js (lazy) -->
+  <script src="lib/label-drag-data.js"></script>
   <script src="detection/crop-engine.js"></script>
+  <script src="detection/carrier-utils.js"></script>
   <script src="detection/model-detector.js"></script>
   <script src="detection/barcode-decoder.js"></script>
   <script src="detection/label-detector.js"></script>

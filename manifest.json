@@ -36,7 +36,7 @@
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["page-label-drag.js"],
+      "js": ["lib/label-drag-data.js", "page-label-drag.js"],
       "run_at": "document_idle",
       "all_frames": true
     }

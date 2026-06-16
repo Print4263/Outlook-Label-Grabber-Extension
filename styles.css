@@ -132,10 +132,6 @@ button:disabled {
   background: linear-gradient(180deg, #0891b2, #0e7490);
 }
 
-.staff-mode #resetLayoutButton {
-  display: none;
-}
-
 .download-label-panel,
 .drop-zone-disclosure,
 .recent-downloads,
@@ -161,7 +157,8 @@ button:disabled {
   justify-content: flex-end;
 }
 
-.display-settings-disclosure {
+.display-settings-disclosure,
+.advanced-controls {
   grid-column: 1 / -1;
 }
 
@@ -207,7 +204,8 @@ button:disabled {
 }
 
 .print-settings-disclosure > summary,
-.display-settings-disclosure > summary {
+.display-settings-disclosure > summary,
+.advanced-controls > summary {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -220,10 +218,12 @@ button:disabled {
 }
 
 .print-settings-disclosure > summary::-webkit-details-marker,
-.display-settings-disclosure > summary::-webkit-details-marker { display: none; }
+.display-settings-disclosure > summary::-webkit-details-marker,
+.advanced-controls > summary::-webkit-details-marker { display: none; }
 
 .print-settings-disclosure > summary::before,
-.display-settings-disclosure > summary::before {
+.display-settings-disclosure > summary::before,
+.advanced-controls > summary::before {
   content: '▶';
   font-size: 9px;
   transition: transform 0.15s;
@@ -231,12 +231,14 @@ button:disabled {
 }
 
 .print-settings-disclosure[open] > summary::before,
-.display-settings-disclosure[open] > summary::before {
+.display-settings-disclosure[open] > summary::before,
+.advanced-controls[open] > summary::before {
   transform: rotate(90deg);
 }
 
 .print-settings-disclosure > summary:hover,
-.display-settings-disclosure > summary:hover {
+.display-settings-disclosure > summary:hover,
+.advanced-controls > summary:hover {
   color: #111827;
 }
 
@@ -246,6 +248,39 @@ button:disabled {
 
 .print-settings {
   position: static;
+}
+
+.advanced-controls {
+  border: none;
+  background: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.advanced-controls-body {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid #d6dde8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.advanced-controls .drop-zone-disclosure,
+.advanced-controls .display-settings-disclosure,
+.advanced-controls .mode-panel {
+  grid-column: 1;
+}
+
+.advanced-controls .mode-panel {
+  justify-content: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.advanced-controls #resetLayoutButton {
+  grid-column: auto;
 }
 
 .progress,
@@ -403,6 +438,41 @@ h2 {
 .drop-zone:focus {
   border-color: #2563eb;
   outline: 3px solid rgba(37, 99, 235, 0.18);
+}
+
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(15, 23, 42, 0.42);
+  pointer-events: none;
+}
+
+.drop-overlay-panel {
+  display: grid;
+  gap: 6px;
+  width: min(520px, 86vw);
+  padding: 28px 24px;
+  border: 3px dashed #60a5fa;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #0f172a;
+  text-align: center;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.32);
+}
+
+.drop-overlay-panel strong {
+  font-size: 26px;
+  line-height: 1.15;
+}
+
+.drop-overlay-panel span {
+  color: #475569;
+  font-size: 15px;
+  font-weight: 700;
 }
 
 .settings {
@@ -1254,6 +1324,7 @@ h2 {
   .download-label-panel,
   .drop-zone-disclosure,
   .print-settings-disclosure,
+  .advanced-controls,
   .mode-panel,
   .display-settings-disclosure,
   .settings,
@@ -1298,6 +1369,7 @@ h2 {
   .download-label-panel,
   .drop-zone-disclosure,
   .print-settings-disclosure,
+  .advanced-controls,
   .mode-panel,
   .display-settings-disclosure,
   .settings,

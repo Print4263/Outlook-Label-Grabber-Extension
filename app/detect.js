@@ -486,7 +486,7 @@ function localLabelScore(label) {
   const reason = String(label.localReason || "");
   const carrier = String(label.carrier || "").toUpperCase();
   const text = String(label.pageText || "").toUpperCase();
-  const isUps = carrier === "UPS" || /\bUPS\b|UPS TRACKING|UPS GROUND|UPS 2ND DAY AIR|UPS NEXT DAY AIR|\b1Z[0-9A-Z]{16}\b/.test(text);
+  const isUps = carrier === "UPS" || Boolean(window.LabelExtractorCarrier?.isUpsText(text));
   if (isUps && reason === "keywords") return 7;
   if (isUps && reason === "text-label-page") return 6;
   if (isUps && reason === "dashed-border") return 1;

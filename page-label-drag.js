@@ -12,12 +12,13 @@
   }, true);
 
   async function captureDraggedLabel(event) {
-    const candidate = dragDataCandidate(event.dataTransfer) || labelDragCandidate(event.target);
+    const dragData = window.LabelExtractorDragData;
+    const candidate = dragData?.candidateFromTransfer?.(event.dataTransfer) || labelDragCandidate(event.target);
     if (!candidate?.url) return;
 
     const payload = {
       url: candidate.url,
-      name: filenameFromUrl(candidate.url),
+      name: dragData?.filenameFromUrl?.(candidate.url) || "dragged-label",
       type: candidate.type || "",
       createdAt: Date.now()
     };
@@ -34,28 +35,6 @@
     }
 
     await chrome.storage.local.set({ [RECENT_DRAGGED_LABEL_KEY]: payload });
-  }
-
-  function dragDataCandidate(transfer) {
-    if (!transfer) return null;
-
-    const downloadUrl = transfer.getData("DownloadURL");
-    if (downloadUrl) {
-      const parts = downloadUrl.split(":");
-      const url = parts.length >= 3 ? parts.slice(2).join(":") : downloadUrl;
-      if (url) return { url, type: parts[0] || "" };
-    }
-
-    const uriList = transfer.getData("text/uri-list");
-    if (uriList) {
-      const url = uriList.split(/\r?\n/).find((line) => line && !line.startsWith("#")) || "";
-      if (url) return { url, type: "" };
-    }
-
-    const plain = transfer.getData("text/plain");
-    if (/^(https?|blob):/i.test(plain)) return { url: plain, type: "" };
-
-    return null;
   }
 
   function labelDragCandidate(target) {
@@ -96,13 +75,4 @@
     };
   }
 
-  function filenameFromUrl(url) {
-    try {
-      const parsed = new URL(url, location.href);
-      const name = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() || "");
-      return name || "dragged-label";
-    } catch (_) {
-      return "dragged-label";
-    }
-  }
 })();

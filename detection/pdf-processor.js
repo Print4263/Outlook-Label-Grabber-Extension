@@ -395,7 +395,23 @@
         );
       }
     }
-    try { window.LabelExtractorCrop.eraseFaintRules(canvas); } catch (_) {}
+    // eraseFaintRules is a full-canvas dual-axis scan (~250ms on a 4x6
+    // page at 3x DPI). The faint grey fold/separator rules it erases only appear
+    // on BROWSER-PRINTED carrier sheets (UPS "View/Print Label", CampusShip),
+    // which always carry print furniture, a FOLD HERE marker/fold, or carrier-
+    // sheet wording. Skip the scan on everything else (most labels) — they have no
+    // such rules, so the scan is pure wasted time. Validate accuracy via fix-check.
+    // The faint grey fold/separator rules eraseFaintRules removes are
+    // VECTOR artifacts of browser-printed carrier sheets, which always carry a
+    // text layer. An image-only page (Amazon/USPS embedded label, a photographed
+    // label) cannot have them, so the full-canvas scan there is pure waste — and on
+    // multi-page embedded packets it pays per page. Skip the scan ONLY on those;
+    // every text-layer PDF (incl. UPS View/Print sheets) keeps it → zero accuracy
+    // risk. (A wider signal-based gate skipped a real View/Print sheet — rejected.)
+    const hasTextLayer = (text || "").trim().length >= 20;
+    if (hasTextLayer) {
+      try { window.LabelExtractorCrop.eraseFaintRules(canvas); } catch (_) {}
+    }
 
     return {
       pageIndex,
@@ -546,7 +562,7 @@
       labels.push({
         confidence: 0.96,
         reason: "embedded-twin-label",
-        carrier: guessCarrier(page.text),
+        carrier: window.LabelExtractorCarrier?.guessCarrier(page.text, { fallback: "Model" }) || "Model",
         pageIndex: page.pageIndex,
         pageCount: page.pageCount,
         label,
@@ -713,14 +729,6 @@
       image.onerror = reject;
       image.src = src;
     });
-  }
-
-  function guessCarrier(text) {
-    const value = String(text || "").toUpperCase();
-    if (/\bUPS\b|UPS TRACKING|UPS GROUND|1Z[0-9A-Z]{16}/.test(value)) return "UPS";
-    if (/USPS|POSTAL SERVICE|GROUND ADVANTAGE|PRIORITY MAIL/.test(value)) return "USPS";
-    if (/FEDEX|FEDERAL EXPRESS/.test(value)) return "FedEx";
-    return "Model";
   }
 
   window.LabelExtractorPDF = { process, renderPage };

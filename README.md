@@ -64,9 +64,11 @@ The setting is saved per device only.
 | `detection/pdf-processor.js` | pdf.js page render, cut-line detection, twin-split guard |
 | `detection/png-processor.js` | Image decode, upscale to ~3000 px for phone screenshots |
 | `detection/crop-engine.js` | White-trim, content rescue, gap clamp, orientation probe |
+| `detection/carrier-utils.js` | Shared text-based carrier guesses used by PDF/model ranking |
 | `detection/model-detector.js` | ONNX YOLO inference (fallback / refinement layer) |
 | `models/shipping-label.onnx` | On-device YOLO model (~10 MB) |
 | `lib/` | pdf.js, ONNX Runtime, heic2any, zxing-wasm reader, ts-tracking-number bundle |
+| `lib/label-drag-data.js` | Shared drag payload parser for panel drops and page drag capture |
 | `config.js` | Upload limits, supported types, barcode-decode flags (`BARCODE.ENRICH` / `RERANK`) |
 | `background.js` | Service worker — event-driven only, no polling |
 | `outlook-reader.js` | Outlook content script — sender read, Download Label grab, reading-view restore |

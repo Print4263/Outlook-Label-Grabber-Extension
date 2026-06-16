@@ -43,7 +43,7 @@ canvas { border: 1px solid #ccc; display: block; }
 // Cache-bust the detection stack on every load (same trick as test.html).
 (function () {
   const v = Date.now();
-  ["../detection/crop-engine.js", "../detection/model-detector.js",
+  ["../detection/crop-engine.js", "../detection/carrier-utils.js", "../detection/model-detector.js",
    "../detection/label-detector.js", "../detection/pdf-processor.js",
    "../detection/png-processor.js", "../config.js"].forEach((src) => {
     document.write('<script src="' + src + "?v=" + v + '"><\/script>');

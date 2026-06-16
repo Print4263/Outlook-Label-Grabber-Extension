@@ -98,6 +98,7 @@ const els = {
   popoutButton: document.getElementById("popoutButton"),
   resetLayoutButton: document.getElementById("resetLayoutButton"),
   dropZone: document.getElementById("dropZone"),
+  dropOverlay: document.getElementById("dropOverlay"),
   fileInput: document.getElementById("fileInput"),
   pickFile: document.getElementById("pickFile"),
   grabOutlookAttachment: document.getElementById("grabOutlookAttachment"),
@@ -202,19 +203,21 @@ function bindEvents() {
   // document-level dragover+drop the browser falls back to NAVIGATING to the
   // dropped blob: URL (the dead-blob tab). dragover MUST preventDefault or the
   // drop event never fires at all.
-  ["dragenter", "dragover"].forEach((eventName) => {
-    document.addEventListener(eventName, (event) => {
-      event.preventDefault();
-      els.dropZone?.classList.add("dragging");
-    });
+  document.addEventListener("dragenter", (event) => {
+    event.preventDefault();
+    showDropOverlay(event);
+  });
+  document.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    showDropOverlay(event);
   });
   document.addEventListener("dragleave", (event) => {
     if (event.relatedTarget) return; // only the real "left the window" leave
-    els.dropZone?.classList.remove("dragging");
+    hideDropOverlay();
   });
   document.addEventListener("drop", (event) => {
     event.preventDefault();
-    els.dropZone?.classList.remove("dragging");
+    hideDropOverlay();
     handleDrop(event);
   });
 
@@ -238,6 +241,19 @@ function bindEvents() {
     const pending = changes[PENDING_CONTEXT_LABEL_KEY]?.newValue;
     if (pending) processPendingContextLabel(pending);
   });
+}
+
+function showDropOverlay(event) {
+  if (event?.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  if (els.dropOverlay) els.dropOverlay.hidden = false;
+  document.body.classList.add("panel-dragging");
+  els.dropZone?.classList.add("dragging");
+}
+
+function hideDropOverlay() {
+  if (els.dropOverlay) els.dropOverlay.hidden = true;
+  document.body.classList.remove("panel-dragging");
+  els.dropZone?.classList.remove("dragging");
 }
 
 // Display scale (zoom) lets a single low-resolution register screen shrink the
@@ -691,24 +707,7 @@ function firstDroppedFile(transfer) {
 }
 
 function firstDroppedUrl(transfer) {
-  if (!transfer) return "";
-  const downloadUrl = transfer.getData("DownloadURL");
-  if (downloadUrl) {
-    const parts = downloadUrl.split(":");
-    return parts.length >= 3 ? parts.slice(2).join(":") : downloadUrl;
-  }
-
-  const uriList = transfer.getData("text/uri-list");
-  if (uriList) {
-    return uriList.split(/\r?\n/).find((line) => line && !line.startsWith("#")) || "";
-  }
-
-  const plain = transfer.getData("text/plain");
-  if (/^https?:\/\//i.test(plain) || /^blob:/i.test(plain)) return plain;
-
-  const html = transfer.getData("text/html");
-  const match = html.match(/\b(?:href|src)=["']([^"']+)["']/i);
-  return match ? match[1] : "";
+  return window.LabelExtractorDragData?.firstUrlFromTransfer?.(transfer) || "";
 }
 
 async function tryDroppedUrl(url) {
