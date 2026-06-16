@@ -1238,8 +1238,7 @@
   }
 
   function isUpsLabelText(text) {
-    const value = String(text || "").toUpperCase();
-    return /\b1Z[0-9A-Z]{16}\b/.test(value) || /\bUPS\b|UPS TRACKING|UPS GROUND|UPS 2ND DAY AIR|UPS NEXT DAY AIR/.test(value);
+    return Boolean(window.LabelExtractorCarrier?.isUpsText(text));
   }
 
   function dedupeDetections(candidates) {

@@ -347,12 +347,9 @@ function isLikelyLabelFallbackPage(page) {
 }
 
 function guessLabelCarrier(text) {
-  const value = String(text || "").toUpperCase();
-  if (/\b1Z[0-9A-Z]{16}\b/.test(value) || /\bUPS\b|UPS TRACKING|UPS GROUND/.test(value)) return "UPS";
-  if (/\b(9\d{21,}|92\d{20,})\b/.test(value) || /USPS|POSTAL SERVICE|PRIORITY MAIL|GROUND ADVANTAGE/.test(value)) return "USPS";
-  if (/\b(\d{12}|\d{15}|\d{20})\b/.test(value) || /FEDEX|FEDERAL EXPRESS/.test(value)) return "FedEx";
-  if (/DHL/.test(value)) return "DHL";
-  return "";
+  // Single source of truth: carrier-utils. includeGenericNumbers keeps the old
+  // "bare 12/15/20-digit number ⇒ FedEx" behavior; no marketplace names here.
+  return window.LabelExtractorCarrier?.guessCarrier(text, { includeGenericNumbers: true }) || "";
 }
 
 function zoomedFallbackCanvas(sourceCanvas) {

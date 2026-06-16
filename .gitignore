@@ -25,3 +25,6 @@ label-studio-state-*.json
 dev/fix-labels/
 dev/fix-report-current.json
 dev/fix-labels-list.json
+
+# Port backups (local only — git history is the real backup)
+dev/port-backup-*/
