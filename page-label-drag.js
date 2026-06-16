@@ -23,8 +23,14 @@
     };
 
     if (/^blob:/i.test(candidate.url)) {
-      const blobPayload = await blobUrlPayload(candidate.url, payload.name);
-      if (blobPayload) Object.assign(payload, blobPayload);
+      // Read the blob to a data URL NOW — while the drag is live and the blob is
+      // still valid in this frame's origin. The panel (a different context) can't
+      // fetch it later. On failure, leave the url-only payload so the panel can
+      // fall back to the background all-frames resolve.
+      try {
+        const blobPayload = await blobUrlPayload(candidate.url, payload.name);
+        if (blobPayload) Object.assign(payload, blobPayload);
+      } catch (_) { /* keep url-only payload */ }
     }
 
     await chrome.storage.local.set({ [RECENT_DRAGGED_LABEL_KEY]: payload });

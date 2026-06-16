@@ -197,21 +197,26 @@ function bindEvents() {
 
   bindCropBoxEvents();
 
+  // Whole-panel drop target. A drag from Outlook can land anywhere on the panel,
+  // not just the (collapsed) "Choose file manually" box — and without a
+  // document-level dragover+drop the browser falls back to NAVIGATING to the
+  // dropped blob: URL (the dead-blob tab). dragover MUST preventDefault or the
+  // drop event never fires at all.
   ["dragenter", "dragover"].forEach((eventName) => {
-    els.dropZone.addEventListener(eventName, (event) => {
+    document.addEventListener(eventName, (event) => {
       event.preventDefault();
-      els.dropZone.classList.add("dragging");
+      els.dropZone?.classList.add("dragging");
     });
   });
-
-  ["dragleave", "drop"].forEach((eventName) => {
-    els.dropZone.addEventListener(eventName, (event) => {
-      event.preventDefault();
-      els.dropZone.classList.remove("dragging");
-    });
+  document.addEventListener("dragleave", (event) => {
+    if (event.relatedTarget) return; // only the real "left the window" leave
+    els.dropZone?.classList.remove("dragging");
   });
-
-  els.dropZone.addEventListener("drop", handleDrop);
+  document.addEventListener("drop", (event) => {
+    event.preventDefault();
+    els.dropZone?.classList.remove("dragging");
+    handleDrop(event);
+  });
 
   // Idle-scroll-to-top: any real activity re-arms the timer (throttled so a burst
   // of mousemove/scroll events doesn't thrash). When it fires, the panel eases
