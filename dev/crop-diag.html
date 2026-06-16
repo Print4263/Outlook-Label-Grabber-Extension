@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Crop Diagnostic — corpus clipping scan</title>
+<style>
+  body { font-family: "Segoe UI", Arial, sans-serif; margin: 16px; background: #f3f5f8; color: #111827; }
+  h1 { font-size: 18px; }
+  #status { font-size: 13px; color: #374151; margin: 8px 0; white-space: pre-wrap; }
+  #summary { font-size: 12px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:8px; white-space:pre-wrap; font-family: ui-monospace, Consolas, monospace; }
+  .case { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; margin: 12px 0; }
+  .case h2 { font-size: 14px; margin: 0 0 8px; }
+  .reason { color: #3730a3; font-weight: 700; }
+  .clip { color:#b91c1c; }
+  .row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+  .col { text-align: center; font-size: 11px; color: #6b7280; }
+  .col img, .col canvas { display: block; border: 1px solid #cbd5e1; background: #fff; max-height: 280px; }
+</style>
+</head>
+<body>
+<h1>Crop diagnostic — corpus clipping scan</h1>
+<div id="status">loading…</div>
+<pre id="summary"></pre>
+<div id="out"></div>
+
+<script src="../lib/pdf.min.js"></script>
+<script src="../lib/ort.min.js"></script>
+<script src="../detection/crop-engine.js?v=10"></script>
+<script src="../detection/carrier-utils.js?v=10"></script>
+<script src="../detection/model-detector.js?v=10"></script>
+<script src="../detection/label-detector.js?v=10"></script>
+<script src="../detection/pdf-processor.js?v=10"></script>
+<script src="../detection/png-processor.js?v=10"></script>
+<script src="../config.js?v=10"></script>
+<script>
+window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
+
+const RESULTS = [];
+window.__diag = { done: false, results: RESULTS };
+const setStatus = (t) => document.getElementById("status").textContent = t;
+
+function sourceCanvasFor(cand) {
+  const pages = Array.isArray(cand?.pages) ? cand.pages : [];
+  const pi = Number(cand?.pageIndex || 0);
+  const page = pages.find(p => Number(p?.pageIndex || 0) === pi) || pages[pi] || pages[0];
+  return page?.canvas || cand?.sourceCanvas || null;
+}
+
+// Count content lines (rows or cols with >= minCount dark px) in a band just
+// OUTSIDE a crop edge. High count = the final crop clipped real label content.
+function outsideContent(srcCanvas, rect, edge, bandPx) {
+  const ctx = srcCanvas.getContext("2d", { willReadFrequently: true });
+  const W = srcCanvas.width, H = srcCanvas.height;
+  const white = 246;
+  const x0 = Math.max(0, rect.x), y0 = Math.max(0, rect.y);
+  const x1 = Math.min(W, rect.x + rect.width), y1 = Math.min(H, rect.y + rect.height);
+  let lines = 0, maxRun = 0, run = 0;
+  const rowHas = (y) => {
+    const need = Math.max(2, Math.floor((x1 - x0) * 0.01));
+    const d = ctx.getImageData(x0, y, Math.max(1, x1 - x0), 1).data;
+    let c = 0; for (let i = 0; i < d.length; i += 4) { if (d[i+3] >= 16 && !(d[i]>=white&&d[i+1]>=white&&d[i+2]>=white)) { if (++c >= need) return true; } }
+    return false;
+  };
+  const colHas = (x) => {
+    const need = Math.max(2, Math.floor((y1 - y0) * 0.01));
+    const d = ctx.getImageData(x, y0, 1, Math.max(1, y1 - y0)).data;
+    let c = 0; for (let i = 0; i < d.length; i += 4) { if (d[i+3] >= 16 && !(d[i]>=white&&d[i+1]>=white&&d[i+2]>=white)) { if (++c >= need) return true; } }
+    return false;
+  };
+  if (edge === "top") for (let y = Math.floor(rect.y) - 1; y >= Math.max(0, rect.y - bandPx); y--) { if (rowHas(y)) { lines++; run++; maxRun = Math.max(maxRun, run); } else run = 0; }
+  if (edge === "bottom") for (let y = Math.ceil(rect.y + rect.height); y < Math.min(H, rect.y + rect.height + bandPx); y++) { if (rowHas(y)) { lines++; run++; maxRun = Math.max(maxRun, run); } else run = 0; }
+  if (edge === "left") for (let x = Math.floor(rect.x) - 1; x >= Math.max(0, rect.x - bandPx); x--) { if (colHas(x)) { lines++; run++; maxRun = Math.max(maxRun, run); } else run = 0; }
+  if (edge === "right") for (let x = Math.ceil(rect.x + rect.width); x < Math.min(W, rect.x + rect.width + bandPx); x++) { if (colHas(x)) { lines++; run++; maxRun = Math.max(maxRun, run); } else run = 0; }
+  return { lines, maxRun };
+}
+
+function drawScaled(srcCanvas, maxW) {
+  const scale = Math.min(1, maxW / srcCanvas.width);
+  const c = document.createElement("canvas");
+  c.width = Math.round(srcCanvas.width * scale); c.height = Math.round(srcCanvas.height * scale);
+  c.getContext("2d").drawImage(srcCanvas, 0, 0, c.width, c.height);
+  return { canvas: c, scale };
+}
+function overlay(srcCanvas, rects, maxW) {
+  const { canvas, scale } = drawScaled(srcCanvas, maxW);
+  const ctx = canvas.getContext("2d"); ctx.lineWidth = 2;
+  for (const r of rects) { ctx.strokeStyle = r.color; ctx.strokeRect(r.x*scale, r.y*scale, r.width*scale, r.height*scale); }
+  return canvas;
+}
+
+async function run() {
+  const manifest = await (await fetch("diag-manifest.json")).json();
+  let i = 0;
+  for (const name of manifest) {
+    i++;
+    setStatus(`(${i}/${manifest.length}) ${name}…`);
+    try {
+      const buf = await (await fetch("diag-labels/" + encodeURIComponent(name))).arrayBuffer();
+      const processed = await window.LabelExtractorPDF.process({ buffer: buf, type: "application/pdf", name });
+      let candidates = Array.isArray(processed) ? processed
+        : processed?.pages ? await window.LabelExtractorDetector.detectPdfCandidates(processed.pages)
+        : [processed];
+      candidates = (candidates || []).filter(Boolean);
+      const top = candidates[0];
+      const src = sourceCanvasFor(top);
+      const reason = top?.reason || "—";
+      const conf = Number(top?.confidence || 0).toFixed(3);
+      const rect = top?.cropRect;
+      if (!src || !rect) { RESULTS.push({ name, reason, conf, note: "no cropRect/source" }); continue; }
+
+      const m = window.LabelExtractorCrop.measureCropRect(src, rect, {});
+      const band = Math.round(0.10 * (m.clamped.height || 1));
+      const ct = {
+        top: outsideContent(src, m.clamped, "top", band),
+        bottom: outsideContent(src, m.clamped, "bottom", band),
+        left: outsideContent(src, m.clamped, "left", band),
+        right: outsideContent(src, m.clamped, "right", band)
+      };
+      // gap-clamp eat per edge
+      const eat = {
+        top: m.clamped.y - m.expanded.y,
+        bottom: (m.expanded.y + m.expanded.height) - (m.clamped.y + m.clamped.height),
+        left: m.clamped.x - m.expanded.x,
+        right: (m.expanded.x + m.expanded.width) - (m.clamped.x + m.clamped.width)
+      };
+      // clip score: worst edge maxRun as % of box dim
+      const clipPct = {
+        top: 100 * ct.top.maxRun / (m.clamped.height || 1),
+        bottom: 100 * ct.bottom.maxRun / (m.clamped.height || 1),
+        left: 100 * ct.left.maxRun / (m.clamped.width || 1),
+        right: 100 * ct.right.maxRun / (m.clamped.width || 1)
+      };
+      const worst = Math.max(clipPct.top, clipPct.bottom, clipPct.left, clipPct.right);
+      RESULTS.push({ name, reason, conf, worst: +worst.toFixed(1), clipPct: {
+        top:+clipPct.top.toFixed(1), bottom:+clipPct.bottom.toFixed(1), left:+clipPct.left.toFixed(1), right:+clipPct.right.toFixed(1)
+      }, eat, box: [m.clamped.width, m.clamped.height], src: [src.width, src.height], _src: src, _m: m });
+    } catch (e) {
+      RESULTS.push({ name, error: String(e?.message || e) });
+    }
+  }
+
+  // Render visual cards for the worst clippers (worst >= 3% run of content outside crop).
+  const flagged = RESULTS.filter(r => r.worst >= 3 && r._src).sort((a,b) => b.worst - a.worst);
+  for (const r of flagged) {
+    const card = document.createElement("div"); card.className = "case";
+    card.innerHTML = `<h2>${r.name} — <span class="reason">${r.reason}</span> conf ${r.conf} · ` +
+      `<span class="clip">worst clip ${r.worst}% (T${r.clipPct.top} B${r.clipPct.bottom} L${r.clipPct.left} R${r.clipPct.right})</span></h2>`;
+    const row = document.createElement("div"); row.className = "row";
+    const ov = overlay(r._src, [
+      { ...r._m.inner, color:"#2563eb" }, { ...r._m.expanded, color:"#f59e0b" }, { ...r._m.clamped, color:"#16a34a" }
+    ], 340);
+    const c1 = document.createElement("div"); c1.className="col"; c1.appendChild(ov);
+    c1.appendChild(document.createTextNode("blue=model/border box, orange=padded, green=PRODUCTION crop"));
+    row.appendChild(c1);
+    const prod = await window.LabelExtractorCrop.cropCanvas(r._src, RESULTS.find(x=>x.name===r.name) && r._m.inner ? {x:r._m.inner.x,y:r._m.inner.y,width:r._m.inner.width,height:r._m.inner.height} : r._m.inner, {});
+    const c2 = document.createElement("div"); c2.className="col";
+    const im = new Image(); im.src = prod.dataUrl; c2.appendChild(im);
+    c2.appendChild(document.createTextNode(`PRODUCTION crop ${prod.width}×${prod.height}`));
+    row.appendChild(c2);
+    card.appendChild(row);
+    document.getElementById("out").appendChild(card);
+  }
+
+  // Summary table sorted by worst clip.
+  const rows = RESULTS.filter(r => typeof r.worst === "number").sort((a,b)=>b.worst-a.worst);
+  const pad = (s,n)=>String(s).padEnd(n).slice(0,n);
+  let txt = pad("label",34)+pad("reason",20)+pad("conf",7)+pad("worst%",8)+"T/B/L/R clip%\n";
+  for (const r of rows) txt += pad(r.name,34)+pad(r.reason,20)+pad(r.conf,7)+pad(r.worst,8)+`${r.clipPct.top}/${r.clipPct.bottom}/${r.clipPct.left}/${r.clipPct.right}\n`;
+  const noc = RESULTS.filter(r=>r.note); if (noc.length) txt += "\n[no cropRect — embedded/full-page]: " + noc.map(r=>r.name+"("+r.reason+")").join(", ");
+  const err = RESULTS.filter(r=>r.error); if (err.length) txt += "\n[errors]: " + err.map(r=>r.name+": "+r.error).join("; ");
+  document.getElementById("summary").textContent = txt;
+
+  // strip canvases from the JSON snapshot
+  window.__diag.summary = rows.map(({_src,_m,...r})=>r);
+  window.__diag.done = true;
+  setStatus(`Done. ${RESULTS.length} labels, ${flagged.length} flagged (worst clip >=3%).`);
+}
+run();
+</script>
+</body>
+</html>

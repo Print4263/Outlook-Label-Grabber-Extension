@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>One-label probe</title>
+<style>
+  body { font-family: "Segoe UI", Arial, sans-serif; margin: 16px; background: #f3f5f8; color: #111827; }
+  #out img, #out canvas { border: 1px solid #cbd5e1; background: #fff; max-height: 320px; display: block; }
+  .row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+  .col { text-align: center; font-size: 11px; color: #6b7280; }
+</style>
+</head>
+<body>
+<h1>One-label probe</h1>
+<div id="status">scripts loading…</div>
+<div id="out"></div>
+
+<script src="../lib/pdf.min.js"></script>
+<script src="../lib/ort.min.js"></script>
+<script src="../detection/crop-engine.js?v=10"></script>
+<script src="../detection/carrier-utils.js?v=10"></script>
+<script src="../detection/model-detector.js?v=10"></script>
+<script src="../detection/label-detector.js?v=10"></script>
+<script src="../detection/pdf-processor.js?v=10"></script>
+<script src="../detection/png-processor.js?v=10"></script>
+<script src="../config.js?v=10"></script>
+<script>
+window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
+
+// Run one PDF from diag-labels/ through the real pipeline. Stores everything on
+// window.__one for eval-based inspection; renders crops into #out.
+window.__one = { done: false };
+window.runOne = async function (name) {
+  window.__one = { done: false, name };
+  const status = document.getElementById("status");
+  status.textContent = "running " + name + "…";
+  const buf = await (await fetch("diag-labels/" + encodeURIComponent(name))).arrayBuffer();
+  const processed = await window.LabelExtractorPDF.process({ buffer: buf, type: "application/pdf", name });
+  let candidates = Array.isArray(processed) ? processed
+    : processed?.pages ? await window.LabelExtractorDetector.detectPdfCandidates(processed.pages)
+    : [processed];
+  candidates = (candidates || []).filter(Boolean);
+  window.__one.candidates = candidates;
+  window.__one.pages = Array.isArray(processed) ? null : processed?.pages || null;
+
+  const out = document.getElementById("out");
+  out.replaceChildren();
+  const row = document.createElement("div");
+  row.className = "row";
+  candidates.slice(0, 6).forEach((c, i) => {
+    if (!c?.label?.dataUrl) return;
+    const col = document.createElement("div");
+    col.className = "col";
+    const img = new Image();
+    img.src = c.label.dataUrl;
+    col.appendChild(img);
+    col.appendChild(document.createTextNode(
+      `#${i} ${c.reason} conf ${Number(c.confidence || 0).toFixed(3)} ${c.label.width}×${c.label.height}` +
+      (c.cropRect ? ` rect[${Math.round(c.cropRect.x)},${Math.round(c.cropRect.y)} ${Math.round(c.cropRect.width)}×${Math.round(c.cropRect.height)}]` : " (no rect)")
+    ));
+    row.appendChild(col);
+  });
+  out.appendChild(row);
+
+  window.__one.summary = candidates.slice(0, 8).map((c, i) => ({
+    i, reason: c.reason, conf: +Number(c.confidence || 0).toFixed(3),
+    page: c.pageIndex, size: c.label ? [c.label.width, c.label.height] : null,
+    rect: c.cropRect || null, sourceKind: c.sourceKind || ""
+  }));
+  window.__one.done = true;
+  status.textContent = "done: " + name;
+  return window.__one.summary;
+};
+document.getElementById("status").textContent = "ready — call runOne(name)";
+</script>
+</body>
+</html>

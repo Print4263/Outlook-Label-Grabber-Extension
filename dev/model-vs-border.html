@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Model vs Border — swap preview</title>
+<style>
+  body { font-family: "Segoe UI", Arial, sans-serif; margin: 16px; background: #f3f5f8; color: #111827; }
+  h1 { font-size: 18px; }
+  #status { font-size: 13px; color: #374151; }
+  #summary { font-size: 12px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:8px; white-space:pre-wrap; font-family: ui-monospace, Consolas, monospace; }
+  .case { background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:12px; margin:12px 0; }
+  .case h2 { font-size:14px; margin:0 0 8px; }
+  .row { display:flex; gap:14px; align-items:flex-start; flex-wrap:wrap; }
+  .col { text-align:center; font-size:11px; color:#6b7280; }
+  .col img { display:block; border:1px solid #cbd5e1; background:#fff; max-height:300px; }
+  .border-col img { border:2px solid #f59e0b; }
+  .model-col img { border:2px solid #16a34a; }
+  .bad { color:#b91c1c; font-weight:700; }
+</style>
+</head>
+<body>
+<h1>Model vs Border — what forcing trained-model would do</h1>
+<div id="status">loading…</div>
+<pre id="summary"></pre>
+<div id="out"></div>
+
+<script src="../lib/pdf.min.js"></script>
+<script src="../lib/ort.min.js"></script>
+<script src="../detection/crop-engine.js?v=6"></script>
+<script src="../detection/carrier-utils.js?v=6"></script>
+<script src="../detection/model-detector.js?v=6"></script>
+<script src="../detection/label-detector.js?v=6"></script>
+<script src="../detection/pdf-processor.js?v=6"></script>
+<script src="../detection/png-processor.js?v=6"></script>
+<script src="../config.js?v=6"></script>
+<script>
+window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
+const RESULTS = [];
+window.__mvb = { done:false, results:RESULTS };
+const setStatus = t => document.getElementById("status").textContent = t;
+
+function srcFor(cand){
+  const pages = Array.isArray(cand?.pages)?cand.pages:[];
+  const pi = Number(cand?.pageIndex||0);
+  const page = pages.find(p=>Number(p?.pageIndex||0)===pi)||pages[pi]||pages[0];
+  return page?.canvas || cand?.sourceCanvas || null;
+}
+function worstClip(src, rect){
+  const m = window.LabelExtractorCrop.measureCropRect(src, rect, {});
+  const c = m.clamped;
+  const band = Math.round(0.10*(c.height||1));
+  const white=246;
+  const ctx=src.getContext("2d",{willReadFrequently:true});
+  const W=src.width,H=src.height;
+  const x0=Math.max(0,c.x),y0=Math.max(0,c.y),x1=Math.min(W,c.x+c.width),y1=Math.min(H,c.y+c.height);
+  const rowHas=y=>{const d=ctx.getImageData(x0,y,Math.max(1,x1-x0),1).data;const n=Math.max(2,Math.floor((x1-x0)*0.01));let k=0;for(let i=0;i<d.length;i+=4)if(d[i+3]>=16&&!(d[i]>=white&&d[i+1]>=white&&d[i+2]>=white)){if(++k>=n)return true;}return false;};
+  const colHas=x=>{const d=ctx.getImageData(x,y0,1,Math.max(1,y1-y0)).data;const n=Math.max(2,Math.floor((y1-y0)*0.01));let k=0;for(let i=0;i<d.length;i+=4)if(d[i+3]>=16&&!(d[i]>=white&&d[i+1]>=white&&d[i+2]>=white)){if(++k>=n)return true;}return false;};
+  const run=(go)=>{let mx=0,r=0;go(v=>{if(v){r++;mx=Math.max(mx,r);}else r=0;});return mx;};
+  const t=run(cb=>{for(let y=Math.floor(c.y)-1;y>=Math.max(0,c.y-band);y--)cb(rowHas(y));});
+  const b=run(cb=>{for(let y=Math.ceil(c.y+c.height);y<Math.min(H,c.y+c.height+band);y++)cb(rowHas(y));});
+  const l=run(cb=>{for(let x=Math.floor(c.x)-1;x>=Math.max(0,c.x-band);x--)cb(colHas(x));});
+  const rr=run(cb=>{for(let x=Math.ceil(c.x+c.width);x<Math.min(W,c.x+c.width+band);x++)cb(colHas(x));});
+  return { worst:+Math.max(100*t/c.height,100*b/c.height,100*l/c.width,100*rr/c.width).toFixed(1),
+           T:+(100*t/c.height).toFixed(1),B:+(100*b/c.height).toFixed(1),L:+(100*l/c.width).toFixed(1),R:+(100*rr/c.width).toFixed(1) };
+}
+function aspect(rect){ const a=rect.width/Math.max(1,rect.height); return +Math.min(Math.abs(a-1.5),Math.abs(a-0.666)).toFixed(2); }
+
+async function run(){
+  const manifest = await (await fetch("diag-manifest.json")).json();
+  let i=0;
+  for(const name of manifest){
+    i++; setStatus(`(${i}/${manifest.length}) ${name}…`);
+    try{
+      const buf = await (await fetch("diag-labels/"+encodeURIComponent(name))).arrayBuffer();
+      const processed = await window.LabelExtractorPDF.process({buffer:buf,type:"application/pdf",name});
+      let cands = Array.isArray(processed)?processed
+        : processed?.pages? await window.LabelExtractorDetector.detectPdfCandidates(processed.pages)
+        : [processed];
+      cands=(cands||[]).filter(Boolean);
+      const top=cands[0];
+      const model=cands.find(c=>c?.reason==="trained-model");
+      const src=srcFor(top);
+      const rec={ name, topReason:top?.reason||"—", topConf:+Number(top?.confidence||0).toFixed(3),
+        modelExists: !!model, modelConf: model?+Number(model.confidence||0).toFixed(3):null };
+      if(src && top?.cropRect) rec.borderClip = worstClip(src, top.cropRect).worst;
+      if(src && model?.cropRect){
+        const mc = worstClip(src, model.cropRect);
+        rec.modelClip = mc.worst; rec.modelAspect = aspect(model.cropRect);
+        rec._src=src; rec._modelRect=model.cropRect; rec._borderRect=top?.cropRect;
+      }
+      RESULTS.push(rec);
+    }catch(e){ RESULTS.push({name, error:String(e?.message||e)}); }
+  }
+
+  // Visual: only border-won labels where a model candidate exists.
+  const swaps = RESULTS.filter(r=>/border/.test(r.topReason||"") && r.modelExists && r._src);
+  for(const r of swaps){
+    const card=document.createElement("div"); card.className="case";
+    card.innerHTML=`<h2>${r.name} — top=<b>${r.topReason}</b> ${r.topConf} · model conf ${r.modelConf} · `+
+      `border clip ${r.borderClip}% / <span class="${r.modelClip>r.borderClip+1?'bad':''}">model clip ${r.modelClip}%</span> · model aspectΔ ${r.modelAspect}</h2>`;
+    const row=document.createElement("div"); row.className="row";
+    const bImg=await window.LabelExtractorCrop.cropCanvas(r._src, r._borderRect, {});
+    const mImg=await window.LabelExtractorCrop.cropCanvas(r._src, r._modelRect, {});
+    const c1=document.createElement("div"); c1.className="col border-col"; const i1=new Image(); i1.src=bImg.dataUrl; c1.appendChild(i1); c1.appendChild(document.createTextNode(`BORDER (current) ${bImg.width}×${bImg.height}`));
+    const c2=document.createElement("div"); c2.className="col model-col"; const i2=new Image(); i2.src=mImg.dataUrl; c2.appendChild(i2); c2.appendChild(document.createTextNode(`MODEL (forced) ${mImg.width}×${mImg.height}`));
+    row.appendChild(c1); row.appendChild(c2); card.appendChild(row);
+    document.getElementById("out").appendChild(card);
+  }
+
+  const pad=(s,n)=>String(s).padEnd(n).slice(0,n);
+  const rows=RESULTS.filter(r=>r.topReason);
+  let txt=pad("label",34)+pad("top",16)+pad("mdl?",6)+pad("mdlConf",9)+pad("bClip",7)+pad("mClip",7)+"aspΔ\n";
+  for(const r of rows.sort((a,b)=>(/border/.test(b.topReason)?1:0)-(/border/.test(a.topReason)?1:0)))
+    txt+=pad(r.name,34)+pad(r.topReason,16)+pad(r.modelExists?"yes":"NO",6)+pad(r.modelConf??"-",9)+pad(r.borderClip??"-",7)+pad(r.modelClip??"-",7)+(r.modelAspect??"-")+"\n";
+  document.getElementById("summary").textContent=txt;
+  window.__mvb.summary = rows.map(({_src,_modelRect,_borderRect,...r})=>r);
+  window.__mvb.done=true;
+  setStatus(`Done. ${rows.length} labels, ${swaps.length} border→model swaps previewed.`);
+}
+run();
+</script>
+</body>
+</html>

@@ -76,6 +76,9 @@ The setting is saved per device only.
 | `dev/test.html` | Training Studio entry point (not shipped) |
 | `dev/studio/` | Studio modules: pipeline runner, wins-by-detector stats, per-label trace log, 4×6 preview, fix-report export, barcode A/B compare |
 | `dev/fix-check.html` | IoU scoring harness — runs real pipeline vs. tagged corrections |
+| `dev/one-label.html` | Single-label probe — runs one corpus file through the real pipeline and renders top candidates |
+| `dev/crop-diag.html` | Crop diagnostic harness — scans a corpus for crop-edge clipping and crop quality issues |
+| `dev/model-vs-border.html` | Detector comparison harness — previews current border winner versus forced trained-model crops |
 
 ## Detection pipeline
 
