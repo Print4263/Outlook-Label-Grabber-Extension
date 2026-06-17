@@ -80,6 +80,7 @@ The setting is saved per device only.
 | `dev/crop-diag.html` | Crop diagnostic harness — scans a corpus for crop-edge clipping and crop quality issues |
 | `dev/model-vs-border.html` | Detector comparison harness — previews current border winner versus forced trained-model crops |
 | `dev/bundled-fixtures-harness.js` | Console smoke helper for `dev/test.html` — runs the bundled no-PII fixtures and returns a compact detector-health summary |
+| `dev/single-fixture-harness.js` | Staged-file diagnostic for `dev/test.html` — runs one `_diag` PDF/image, captures the real trace, and renders every raw candidate |
 
 ## Detection pipeline
 

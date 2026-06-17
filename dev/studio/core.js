@@ -964,7 +964,9 @@
     if (Studio.onReady) { try { Studio.onReady(); } catch (e) { console.warn(e); } }
 
     Studio.els.runLocked.disabled = !Object.keys(state.baselines).length;
-    runFixtures();
+    // A staged-fixture diagnostic owns the pipeline run on this page load.
+    // Skipping the default bundled batch keeps its trace and timing isolated.
+    if (!new URLSearchParams(location.search).has("stagedFixture")) runFixtures();
   }
 
   if (document.readyState === "loading") {
