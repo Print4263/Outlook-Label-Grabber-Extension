@@ -936,7 +936,7 @@
     if (rw < 160 || rh < 240) return rect;
 
     const originalDistance = labelAspectDistance(rw / rh);
-    if (originalDistance < 0.012) return rect;
+    if (originalDistance < 0.012 && options.allowAspectNeutralBottom !== true) return rect;
 
     const rows = chromeRowProfile(canvas, x0, x1, y0, y1);
     if (!rows.length) return rect;
