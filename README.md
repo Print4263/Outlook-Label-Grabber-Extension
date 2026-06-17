@@ -79,6 +79,7 @@ The setting is saved per device only.
 | `dev/one-label.html` | Single-label probe — runs one corpus file through the real pipeline and renders top candidates |
 | `dev/crop-diag.html` | Crop diagnostic harness — scans a corpus for crop-edge clipping and crop quality issues |
 | `dev/model-vs-border.html` | Detector comparison harness — previews current border winner versus forced trained-model crops |
+| `dev/bundled-fixtures-harness.js` | Console smoke helper for `dev/test.html` — runs the bundled no-PII fixtures and returns a compact detector-health summary |
 
 ## Detection pipeline
 
