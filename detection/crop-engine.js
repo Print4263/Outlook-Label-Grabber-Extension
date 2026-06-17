@@ -914,6 +914,288 @@
     return { values, peakIndex };
   }
 
+  // OCR-free screenshot chrome trim. Some image labels arrive with app/browser
+  // furniture inside an otherwise-good detector rect: a colored app header, or
+  // Amazon's "Return Mailing Label / Cut this label" instruction band. Text-layer
+  // clamps cannot help because screenshots have no text layer, so look only at
+  // near-edge pixel bands and accept a cut only when it materially improves the
+  // 4x6 aspect. PDFs never call this helper.
+  const CHROME_ROW_STEP = 4;
+  const CHROME_MIN_BAND = 40;
+  const CHROME_MIN_IMPROVEMENT = 0.02;
+  const CHROME_MAX_EDGE_RATIO = 0.24;
+
+  function trimImageChromeBands(canvas, rect, options = {}) {
+    if (!canvas || !rect) return rect;
+    const W = canvas.width, H = canvas.height;
+    const x0 = clamp(Math.round(rect.x), 0, W - 1);
+    const x1 = clamp(Math.round(rect.x + rect.width), x0 + 1, W);
+    const y0 = clamp(Math.round(rect.y), 0, H - 1);
+    const y1 = clamp(Math.round(rect.y + rect.height), y0 + 1, H);
+    const rw = x1 - x0, rh = y1 - y0;
+    if (rw < 160 || rh < 240) return rect;
+
+    const originalDistance = labelAspectDistance(rw / rh);
+    if (originalDistance < 0.012) return rect;
+
+    const rows = chromeRowProfile(canvas, x0, x1, y0, y1);
+    if (!rows.length) return rect;
+
+    const topCuts = imageChromeTopCuts(rows, rh);
+    const bottomCuts = imageChromeBottomCuts(rows, rh, options);
+    if (topCuts.length < 2 && bottomCuts.length < 2) return rect;
+
+    let best = null;
+    for (const top of topCuts) {
+      for (const bottom of bottomCuts) {
+        if (top <= 0 && bottom >= rh) continue;
+        if (top >= bottom) continue;
+        const topTrim = top;
+        const bottomTrim = rh - bottom;
+        if (topTrim > rh * CHROME_MAX_EDGE_RATIO || bottomTrim > rh * CHROME_MAX_EDGE_RATIO) continue;
+        const newHeight = bottom - top;
+        if (newHeight < rh * 0.58) continue;
+        const nextDistance = labelAspectDistance(rw / newHeight);
+        const improvement = originalDistance - nextDistance;
+        const aspectNeutralBottom = options.allowAspectNeutralBottom === true
+          && topTrim === 0
+          && bottomTrim > 0
+          && bottomTrim <= rh * 0.06
+          && nextDistance <= 0.04;
+        if (improvement < CHROME_MIN_IMPROVEMENT && !aspectNeutralBottom) continue;
+        const candidate = {
+          top,
+          bottom,
+          distance: nextDistance,
+          trimmed: topTrim + bottomTrim
+        };
+        if (!best
+          || candidate.distance < best.distance - 1e-6
+          || (Math.abs(candidate.distance - best.distance) <= 1e-6 && candidate.trimmed < best.trimmed)) {
+          best = candidate;
+        }
+      }
+    }
+
+    if (!best) return rect;
+    return {
+      x: x0,
+      y: y0 + best.top,
+      width: rw,
+      height: best.bottom - best.top,
+      chromeTrimmed: true
+    };
+  }
+
+  function chromeRowProfile(canvas, x0, x1, y0, y1) {
+    const data = pixelsFor(canvas);
+    const rows = [];
+    const stepX = Math.max(1, Math.floor((x1 - x0) / 240));
+    for (let y = y0; y < y1; y += CHROME_ROW_STEP) {
+      let samples = 0;
+      let dark = 0;
+      let color = 0;
+      let transitions = 0;
+      let previous = null;
+      for (let x = x0; x < x1; x += stepX) {
+        const i = (y * canvas.width + x) * 4;
+        if (data[i + 3] < 16) continue;
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+        const isDarkPixel = lum < 145;
+        if (isDarkPixel) dark += 1;
+        if (chroma > 45 && lum < 245) color += 1;
+        if (previous !== null && previous !== isDarkPixel) transitions += 1;
+        previous = isDarkPixel;
+        samples += 1;
+      }
+      rows.push({
+        rel: y - y0,
+        dark: samples ? dark / samples : 0,
+        color: samples ? color / samples : 0,
+        transitions: samples ? transitions / samples * 100 : 0
+      });
+    }
+    return rows;
+  }
+
+  function imageChromeTopCuts(rows, height) {
+    const cuts = [0];
+    const maxScan = height * CHROME_MAX_EDGE_RATIO;
+    const color = firstNearEdgeBand(rows, maxScan, (row) => row.color >= 0.12);
+    if (color && color.len >= CHROME_MIN_BAND && color.avgColor >= 0.22) {
+      cuts.push(clampChromeCut(color.to + CHROME_ROW_STEP, height));
+    }
+
+    const text = lastInstructionBandBeforeQuietGap(rows, maxScan, 1);
+    if (text) cuts.push(clampChromeCut(text.to + CHROME_ROW_STEP, height));
+    return uniqueCuts(cuts);
+  }
+
+  function imageChromeBottomCuts(rows, height, options = {}) {
+    const cuts = [height];
+    const minScan = height * (1 - CHROME_MAX_EDGE_RATIO);
+    const text = firstInstructionBandAfterQuietGap(rows, minScan, height);
+    if (text) cuts.push(clampChromeCut(text.from, height));
+    if (options.allowAspectNeutralBottom === true) {
+      const tail = bottomTailAfterQuietGap(rows, height);
+      if (tail) cuts.push(clampChromeCut(tail.from, height));
+    }
+    return uniqueCuts(cuts);
+  }
+
+  function firstNearEdgeBand(rows, maxRel, test) {
+    let start = null;
+    let sumColor = 0;
+    let count = 0;
+    for (const row of rows) {
+      if (row.rel > maxRel) break;
+      if (test(row)) {
+        if (!start) {
+          if (row.rel > CHROME_MIN_BAND) return null;
+          start = row;
+          sumColor = 0;
+          count = 0;
+        }
+        sumColor += row.color;
+        count += 1;
+      } else if (start) {
+        return {
+          from: start.rel,
+          to: row.rel - CHROME_ROW_STEP,
+          len: row.rel - start.rel,
+          avgColor: count ? sumColor / count : 0
+        };
+      }
+    }
+    return null;
+  }
+
+  function lastInstructionBandBeforeQuietGap(rows, maxRel, direction) {
+    let best = null;
+    let start = null;
+    let lastActive = null;
+    let inactive = 0;
+    const near = rows.filter((row) => row.rel <= maxRel);
+    for (let i = 0; i < near.length; i += 1) {
+      const row = near[i];
+      const active = looksLikeInstructionInk(row);
+      if (active) {
+        if (!start) start = { row, index: i };
+        lastActive = { row, index: i };
+        inactive = 0;
+        continue;
+      }
+      if (!start) continue;
+      inactive += CHROME_ROW_STEP;
+      if (quietRunLength(near, i, direction) < CHROME_MIN_BAND) {
+        if (inactive <= CHROME_ROW_STEP * 3) continue;
+        start = null;
+        lastActive = null;
+        inactive = 0;
+        continue;
+      }
+      const prev = lastActive?.row || near[i - 1];
+      const len = prev.rel - start.row.rel + CHROME_ROW_STEP;
+      if (len >= CHROME_MIN_BAND && quietRunLength(near, i, direction) >= CHROME_MIN_BAND) {
+        best = { from: start.row.rel, to: prev.rel, len };
+      }
+      start = null;
+      lastActive = null;
+      inactive = 0;
+    }
+    return best;
+  }
+
+  function firstInstructionBandAfterQuietGap(rows, minRel, height) {
+    const near = rows.filter((row) => row.rel >= minRel && row.rel <= height);
+    let start = null;
+    let lastActive = null;
+    let inactive = 0;
+    for (let i = 0; i < near.length; i += 1) {
+      const row = near[i];
+      if (looksLikeInstructionInk(row)) {
+        if (!start) start = { row, index: i };
+        lastActive = { row, index: i };
+        inactive = 0;
+        continue;
+      }
+      if (!start) continue;
+      inactive += CHROME_ROW_STEP;
+      if (inactive <= CHROME_ROW_STEP * 3) continue;
+      const prev = lastActive?.row || near[i - 1];
+      const len = prev.rel - start.row.rel + CHROME_ROW_STEP;
+      if (len >= CHROME_MIN_BAND && quietRunLength(near, start.index - 1, -1) >= CHROME_MIN_BAND) {
+        return { from: start.row.rel, to: prev.rel, len };
+      }
+      start = null;
+      lastActive = null;
+      inactive = 0;
+    }
+    if (start) {
+      const prev = lastActive?.row || near[near.length - 1];
+      const len = prev.rel - start.row.rel + CHROME_ROW_STEP;
+      if (len >= CHROME_MIN_BAND && quietRunLength(near, start.index - 1, -1) >= CHROME_MIN_BAND) {
+        return { from: start.row.rel, to: prev.rel, len };
+      }
+    }
+    return null;
+  }
+
+  function looksLikeInstructionInk(row) {
+    return row.transitions >= 12 && row.dark >= 0.06 && row.dark <= 0.38 && row.color < 0.08;
+  }
+
+  function looksLikeBottomChromeInk(row) {
+    return row.transitions >= 2 && row.dark >= 0.018 && row.dark <= 0.38 && row.color < 0.08;
+  }
+
+  function bottomTailAfterQuietGap(rows, height) {
+    const maxTail = height * 0.08;
+    let end = null;
+    let start = null;
+    let holes = 0;
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      const row = rows[i];
+      const fromBottom = height - row.rel;
+      if (fromBottom > maxTail && !end) return null;
+      if (looksLikeBottomChromeInk(row)) {
+        if (!end) end = { row, index: i };
+        start = { row, index: i };
+        holes = 0;
+        continue;
+      }
+      if (!end) continue;
+      holes += CHROME_ROW_STEP;
+      if (holes <= CHROME_ROW_STEP * 3) continue;
+      break;
+    }
+    if (!start || !end) return null;
+    const len = end.row.rel - start.row.rel + CHROME_ROW_STEP;
+    if (len < CHROME_MIN_BAND) return null;
+    if (quietRunLength(rows, start.index - 1, -1) < CHROME_MIN_BAND) return null;
+    return { from: start.row.rel, to: end.row.rel, len };
+  }
+
+  function quietRunLength(rows, index, direction) {
+    let length = 0;
+    for (let i = index; i >= 0 && i < rows.length; i += direction) {
+      const row = rows[i];
+      if (row.dark >= 0.025 || row.transitions >= 3 || row.color >= 0.05) break;
+      length += CHROME_ROW_STEP;
+    }
+    return length;
+  }
+
+  function clampChromeCut(value, height) {
+    return clamp(Math.round(value), 0, height);
+  }
+
+  function uniqueCuts(cuts) {
+    return [...new Set(cuts.map((value) => Math.round(value)))].sort((a, b) => a - b);
+  }
+
   window.LabelExtractorCrop = {
     autoCropCanvas,
     cropCanvas,
@@ -926,6 +1208,7 @@
     detectUprightFlip,
     barcodeBandStats,
     refineCardWithinRect,
+    trimImageChromeBands,
     // Band mass below this is too weak to trust for orientation decisions.
     FLIP_MIN_MASS,
     pixelsFor

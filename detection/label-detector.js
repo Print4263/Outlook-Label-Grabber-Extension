@@ -343,7 +343,10 @@
     const page = findPage(candidate.pages || pages, candidate.pageIndex);
     if (!page || page.type !== "png" || !page.canvas) return;
     const r = candidate.cropRect;
-    const refined = window.LabelExtractorCrop.refineCardWithinRect(page.canvas, r);
+    let refined = window.LabelExtractorCrop.refineCardWithinRect(page.canvas, r);
+    if (refined && page.canvas.height >= page.canvas.width * SCREENSHOT_PAGE_MIN_ASPECT) {
+      refined = window.LabelExtractorCrop.trimImageChromeBands(page.canvas, refined, { allowAspectNeutralBottom: true });
+    }
     if (!refined || (refined.x === r.x && refined.y === r.y && refined.width === r.width && refined.height === r.height)) return;
     try {
       // Crop EXACTLY to the refined card. Do NOT route through cropPageCanvas — its
@@ -563,6 +566,8 @@
   // isn't confident.
   const MODEL_OVER_BORDER_MIN_CONFIDENCE = 0.80;
   const MODEL_OVER_BORDER_MAX_ASPECT_DISTANCE = 0.45;
+  const MODEL_OVER_BORDER_KEEP_BORDER_MAX_DISTANCE = 0.06;
+  const MODEL_OVER_BORDER_MIN_SHAPE_ADVANTAGE = 0.08;
   const MODEL_BORDER_REASONS = ["solid-border", "dashed-border"];
   // Tall phone screenshots: a "border" whose crop is basically the whole screen
   // found the screen bezel/app chrome, not a label frame. There the model's box
@@ -577,6 +582,7 @@
     const model = ranked.find((candidate) => candidate?.reason === "trained-model");
     if (!model || model.pageIndex !== top.pageIndex || !model.cropRect) return ranked;
     if (labelAspectDistance(model.cropRect) > MODEL_OVER_BORDER_MAX_ASPECT_DISTANCE) return ranked;
+    if (shouldKeepBetterShapedBorder(top, model)) return ranked;
     const confidence = Number(model.confidence || 0);
     const confident = confidence >= MODEL_OVER_BORDER_MIN_CONFIDENCE;
     if (!confident && !(confidence >= SCREENSHOT_MODEL_MIN_CONFIDENCE
@@ -591,6 +597,21 @@
         : "screenshot-shaped page: whole-screen border crop demoted below accepted model box"
     });
     return [model, ...ranked.filter((candidate) => candidate !== model)];
+  }
+
+  function shouldKeepBetterShapedBorder(border, model) {
+    const borderDistance = labelOutputAspectDistance(border);
+    const modelDistance = labelOutputAspectDistance(model);
+    return borderDistance <= MODEL_OVER_BORDER_KEEP_BORDER_MAX_DISTANCE
+      && modelDistance - borderDistance >= MODEL_OVER_BORDER_MIN_SHAPE_ADVANTAGE;
+  }
+
+  function labelOutputAspectDistance(candidate) {
+    const label = candidate?.label;
+    const width = Number(label?.width || candidate?.cropRect?.width || 0);
+    const height = Number(label?.height || candidate?.cropRect?.height || 0);
+    if (!width || !height) return Infinity;
+    return Math.min(Math.abs(width / height - 1.5), Math.abs(width / height - 2 / 3));
   }
 
   function isFullPageBorderOnTallPage(candidate, pages) {
@@ -732,7 +753,7 @@
       if (regions.length < 1) continue;
 
       const rect = expandRect(unionRects(regions), page.canvas, 0.95);
-      const expanded = expandToLabelLikeRect(rect, page.canvas);
+      const expanded = clampImageChromeRect(page, expandToLabelLikeRect(rect, page.canvas));
       detections.push({
         confidence: 0.42,
         reason: "image-label-fallback",
@@ -813,6 +834,18 @@
 
   function cropPageCanvas(page, rect, options = {}) {
     return window.LabelExtractorCrop.cropCanvas(page.canvas, rect, { ...cropOptionsForPage(page), ...options });
+  }
+
+  function clampImageChromeRect(page, rect) {
+    if (!rect || page?.type !== "png" || !page?.canvas || !window.LabelExtractorCrop?.trimImageChromeBands) return rect;
+    const next = window.LabelExtractorCrop.trimImageChromeBands(page.canvas, rect);
+    if (next && (next.x !== rect.x || next.y !== rect.y || next.width !== rect.width || next.height !== rect.height)) {
+      trace("image-chrome-trim", {
+        from: [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)].join(","),
+        to: [Math.round(next.x), Math.round(next.y), Math.round(next.width), Math.round(next.height)].join(",")
+      });
+    }
+    return next || rect;
   }
 
   // Clamp a detection rect above the page's "Return Authorization Slip" header
@@ -1065,10 +1098,11 @@
       const borderRect = trimKnownDashedBorderForm(detectDashedBorder(page.canvas), page, knownOnlineReturnForm);
       if (!borderRect) continue;
       // Known online-return forms get their own precise trimming; leave them be.
-      const rect = clampRectAboveSlip(
+      let rect = clampRectAboveSlip(
         knownOnlineReturnForm ? borderRect : expandRectToClippedBarcodes(borderRect, page.canvas),
         page
       );
+      rect = clampImageChromeRect(page, rect);
       if (!knownOnlineReturnForm) {
         const fullPage = await fullPageLabelIfShaped(page, pages, rect);
         if (fullPage) { detections.push(fullPage); continue; }
@@ -1137,7 +1171,7 @@
     for (const page of pages) {
       const borderRect = detectSolidLabelBorder(page.canvas);
       if (!borderRect) continue;
-      const rect = clampRectAboveSlip(expandRectToClippedBarcodes(borderRect, page.canvas), page);
+      const rect = clampImageChromeRect(page, clampRectAboveSlip(expandRectToClippedBarcodes(borderRect, page.canvas), page));
 
       const fullPage = await fullPageLabelIfShaped(page, pages, rect);
       if (fullPage) { detections.push(fullPage); continue; }
