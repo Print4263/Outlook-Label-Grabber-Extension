@@ -777,6 +777,13 @@
   const CARD_DARK_LUM = 120;
   const LABEL_ASPECTS = [2 / 3, 3 / 2]; // 4x6 portrait / landscape
   const CARD_PROFILE_ACTIVE = 0.006;
+  // A single trim may discard at most this fraction of the crop's lines as ACTIVE
+  // (content-bearing) rows/cols. Phone/app chrome that we legitimately trim — status
+  // bar, URL bar, app buttons — is thin and discards little content (measured <=10%
+  // of the dimension). The ship-to/from address block is dense (measured ~16%), so
+  // capping here stops the refine from anchoring on a lower barcode and cutting the
+  // address off the top. Tunable: lower = more conservative (more no-ops).
+  const CARD_MAX_TRIM_ACTIVE = 0.12;
   function refineCardWithinRect(canvas, rect) {
     const data = pixelsFor(canvas);
     const W = canvas.width, H = canvas.height;
@@ -805,6 +812,13 @@
     if (!profile) return null;
 
     const minGap = Math.max(24, Math.round(lineCount * 0.02));
+    // Prefix sum of active (content-bearing) lines, so the active content a trim
+    // would discard above/below the kept span is an O(1) lookup below.
+    const activePrefix = new Int32Array(lineCount + 1);
+    for (let i = 0; i < lineCount; i += 1) {
+      activePrefix[i + 1] = activePrefix[i] + (profile.values[i] >= CARD_PROFILE_ACTIVE ? 1 : 0);
+    }
+    const maxTrimActive = Math.round(lineCount * CARD_MAX_TRIM_ACTIVE);
     const startOptions = [{ value: 0, support: 0 }];
     const endOptions = [{ value: lineCount, support: 0 }];
     let gapStart = -1;
@@ -834,6 +848,10 @@
           : newSpan / (y1 - y0);
         const trimmedDistance = labelAspectDistance(trimmedAspect);
         if (trimmedDistance >= originalDistance) continue;
+        // Never trim away a content-dense band (a real label region like the
+        // ship-to/from block) — only thin chrome. Reject this bound pair otherwise.
+        if (activePrefix[start.value] > maxTrimActive) continue;
+        if (activePrefix[lineCount] - activePrefix[end.value] > maxTrimActive) continue;
         const candidate = {
           start: start.value,
           end: end.value,
