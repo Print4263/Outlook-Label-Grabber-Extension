@@ -421,7 +421,60 @@
     const ranked = dedupeDetections(candidates)
       .filter((candidate) => !isLikelyTextInstructionPage(findPage(candidate.pages || pages, candidate.pageIndex), candidate.reason))
       .sort(compareDetections);
-    return demoteOrderDetailsPages(promoteModelOverBorder(promoteDetectionOverTextGuess(ranked), pages), pages);
+    return demoteOrderDetailsPages(promoteModelOverBorder(promoteDetectionOverTextGuess(preferContainingBorderCrop(ranked)), pages), pages);
+  }
+
+  // [BANKAI] Theme 1 completeness tiebreak. detectionRankScore is additive and
+  // rewards nothing for completeness, so a TIGHTER border crop that drops the
+  // logo/header (but keeps a slightly higher detector confidence) can edge out the
+  // crop that holds the whole label. When the top crop is a border crop and a
+  // near-tie border crop of the OTHER kind (dashed vs solid) on the same page
+  // CONTAINS it, prefer the container — gated on the container still being a clean
+  // ~4x6, so a "label + packing-slip" container (too tall, not near 4x6) can never
+  // win. Measured: Attachment-1 solid contains dashed (cover 1.00), gap 0.07, solid
+  // a0.63 -> promote; IMG_8289 solid gap 1.12 AND a0.48 -> left alone (correct).
+  const BORDER_TIEBREAK_WINDOW = 0.5;
+  const BORDER_CONTAIN_MIN_COVER = 0.92;
+
+  function isBorderReason(reason) {
+    return reason === "dashed-border" || reason === "solid-border";
+  }
+
+  // Fraction of `inner`'s area that falls inside `outer`.
+  function rectCoverage(outer, inner) {
+    const ix = Math.max(outer.x, inner.x);
+    const iy = Math.max(outer.y, inner.y);
+    const ax = Math.min(outer.x + outer.width, inner.x + inner.width);
+    const ay = Math.min(outer.y + outer.height, inner.y + inner.height);
+    const iw = Math.max(0, ax - ix);
+    const ih = Math.max(0, ay - iy);
+    const innerArea = inner.width * inner.height;
+    return innerArea > 0 ? (iw * ih) / innerArea : 0;
+  }
+
+  function preferContainingBorderCrop(ranked) {
+    const top = ranked[0];
+    if (!top || !isBorderReason(top.reason) || !top.cropRect) return ranked;
+    const topScore = detectionRankScore(top);
+    for (let i = 1; i < ranked.length; i += 1) {
+      const cand = ranked[i];
+      if (topScore - detectionRankScore(cand) > BORDER_TIEBREAK_WINDOW) break; // sorted desc: no more near-ties
+      if (!isBorderReason(cand.reason) || cand.reason === top.reason) continue;
+      if (!cand.cropRect || cand.pageIndex !== top.pageIndex) continue;
+      const candArea = cand.cropRect.width * cand.cropRect.height;
+      const topArea = top.cropRect.width * top.cropRect.height;
+      if (candArea <= topArea) continue; // the container must be the larger crop
+      if (rectCoverage(cand.cropRect, top.cropRect) < BORDER_CONTAIN_MIN_COVER) continue; // and contain the top
+      if (labelShapeRankScore(cand) < 0.4) continue; // and still be a clean ~4x6 (not label+slip)
+      trace("border-containment", {
+        promoted: cand.reason,
+        over: top.reason,
+        cover: Number(rectCoverage(cand.cropRect, top.cropRect).toFixed(2)),
+        scoreGap: Number((topScore - detectionRankScore(cand)).toFixed(3))
+      });
+      return [cand, ...ranked.filter((c) => c !== cand)];
+    }
+    return ranked;
   }
 
   // Multi-page label PDFs ride along with order-details pages — packing slips,
