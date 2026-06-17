@@ -113,6 +113,7 @@
     const rankedEarly = rankedDetections(candidates, pages);
     const strongEarly = rankedEarly[0];
     if (Number(strongEarly?.confidence || 0) >= 0.95
+      && (!isBorderReason(strongEarly?.reason) || labelShapeRankScore(strongEarly) >= 0.4)
       && !shouldPreferCarrierText(strongEarly, pages)
       && !isTallOverstuffedBorder(strongEarly, pages)
       && cropContainsBarcodeOrUnknown(strongEarly, pages)) {
