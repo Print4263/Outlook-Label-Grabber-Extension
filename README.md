@@ -69,6 +69,7 @@ The setting is saved per device only.
 | `detection/png-processor.js` | Image decode, upscale to ~3000 px for phone screenshots |
 | `detection/crop-engine.js` | White-trim, content rescue, gap clamp, orientation probe |
 | `detection/carrier-utils.js` | Shared text-based carrier guesses used by PDF/model ranking |
+| `detection/page-text-cues.js` | Pure page text-layer classification (order-details, instruction/label cues, online-return, Fashion Nova) shared across detectors |
 | `detection/model-detector.js` | ONNX YOLO inference (fallback / refinement layer) |
 | `models/shipping-label.onnx` | On-device YOLO model (~10 MB) |
 | `lib/` | pdf.js, ONNX Runtime, heic2any, zxing-wasm reader, ts-tracking-number bundle |
