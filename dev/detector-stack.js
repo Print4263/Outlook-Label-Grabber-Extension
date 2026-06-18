@@ -17,6 +17,7 @@
     "../detection/candidate-selection.js",
     "../detection/barcode-confirmation.js",
     "../detection/pdf-text-detectors.js",
+    "../detection/embedded-image-detectors.js",
     "../detection/label-detector.js",
     "../detection/pdf-processor.js",
     "../detection/png-processor.js"
