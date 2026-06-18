@@ -256,6 +256,11 @@ async function applyManualCrop() {
       return;
     }
 
+    // Owner-only telemetry (defined in sidepanel.js): a manual crop means the
+    // auto-result wasn't usable. Log the rejected auto-result so the weekly pull
+    // captures the strongest "the crop was wrong" signal. Never shown to staff.
+    if (typeof logLabelIssue === "function") logLabelIssue("manual-crop", label, state.file?.name || "");
+
     const image = await loadImage(labelToDataUrl(label));
     const sourceWidth = image.naturalWidth || image.width;
     const sourceHeight = image.naturalHeight || image.height;

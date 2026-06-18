@@ -119,6 +119,7 @@ const els = {
   labPanel: document.getElementById("labPanel"),
   copyDebugReport: document.getElementById("copyDebugReport"),
   copyFailureLog: document.getElementById("copyFailureLog"),
+  clearFailureLog: document.getElementById("clearFailureLog"),
   debugReportStatus: document.getElementById("debugReportStatus"),
   printSettings: document.getElementById("printSettings"),
   manualCropTip: document.getElementById("manualCropTip"),
@@ -173,6 +174,7 @@ function bindEvents() {
   els.reprintButton?.addEventListener("click", reprintLastLabel);
   els.copyDebugReport?.addEventListener("click", copyDebugReport);
   els.copyFailureLog?.addEventListener("click", copyFailureLog);
+  els.clearFailureLog?.addEventListener("click", clearFailureLog);
   els.popoutButton?.addEventListener("click", openPopoutWindow);
   els.resetLayoutButton?.addEventListener("click", resetSavedPopoutLayout);
   els.pickFile.addEventListener("click", () => els.fileInput.click());
@@ -329,27 +331,44 @@ async function copyDebugReport() {
   }
 }
 
-// Copies the detection-fallback telemetry as CSV (paste into a spreadsheet) so
-// you can see which senders/carriers most often need manual cropping.
+// Owner weekly pull: copies the bad-label telemetry as CSV (paste into a
+// spreadsheet) so you can see which senders/carriers/detectors most often produce
+// bad or uncertain crops, then locate those source files to report. Lab-mode only.
 async function copyFailureLog() {
   try {
     const data = await chrome.storage?.local?.get("labelFailureLog");
     const log = Array.isArray(data?.labelFailureLog) ? data.labelFailureLog : [];
     if (!log.length) {
-      if (els.debugReportStatus) els.debugReportStatus.textContent = "No detection fallbacks logged yet.";
-      setStatus("No detection fallbacks logged yet.");
+      if (els.debugReportStatus) els.debugReportStatus.textContent = "No bad labels logged yet.";
+      setStatus("No bad labels logged yet.");
       return;
     }
-    const csv = ["timestamp,sender,carrier,reason,confidence,file"]
+    const cell = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const csv = ["timestamp,kind,sender,carrier,validated,reason,confidence,size,aspect,page,file"]
       .concat(log.map((e) =>
-        [e.at, e.sender, e.carrier, e.reason, e.confidence, e.fileName]
-          .map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",")))
+        [e.at, e.kind, e.sender, e.carrier, e.validated, e.reason, e.confidence, e.size, e.aspect, e.page, e.fileName]
+          .map(cell).join(",")))
       .join("\n");
     await navigator.clipboard.writeText(csv);
-    if (els.debugReportStatus) els.debugReportStatus.textContent = `Failure log copied (${log.length} entries).`;
-    setStatus(`Failure log copied (${log.length} entries).`);
+    const oldest = String(log[0]?.at || "").slice(0, 10);
+    const msg = `Bad-label log copied (${log.length} entries since ${oldest}). Use "Clear log" after reporting.`;
+    if (els.debugReportStatus) els.debugReportStatus.textContent = msg;
+    setStatus(`Bad-label log copied (${log.length} entries).`);
   } catch (error) {
-    setStatus(`Could not copy failure log: ${error.message}`, "error");
+    setStatus(`Could not copy bad-label log: ${error.message}`, "error");
+  }
+}
+
+// Reset the weekly window after a pull so next week starts clean. Lab-mode only.
+async function clearFailureLog() {
+  try {
+    const data = await chrome.storage?.local?.get("labelFailureLog");
+    const count = Array.isArray(data?.labelFailureLog) ? data.labelFailureLog.length : 0;
+    await chrome.storage?.local?.set({ labelFailureLog: [] });
+    if (els.debugReportStatus) els.debugReportStatus.textContent = `Bad-label log cleared (${count} removed).`;
+    setStatus(`Bad-label log cleared (${count} removed).`);
+  } catch (error) {
+    setStatus(`Could not clear bad-label log: ${error.message}`, "error");
   }
 }
 
@@ -890,7 +909,7 @@ async function extractSelectedFile() {
     const detectionFellBack = !topResult
       || Boolean(topResult.needsCrop)
       || /fallback/i.test(topResult.localReason || "");
-    if (detectionFellBack) logDetectionFallback(topResult, normalizedFile.name);
+    if (detectionFellBack) logLabelIssue(topResult ? "fallback" : "no-candidates", topResult, normalizedFile.name);
   } catch (error) {
     if (runId !== state.extractionRunId) return;
     const message = error.message || "Unknown error";
@@ -1153,7 +1172,18 @@ function getLabelActionState(label) {
   const hints = getLabelActionHints(label);
   if (hints.rotate) return { label: "Rotate first", className: "conf-rotate" };
   if (hints.crop) return { label: "Needs crop", className: "conf-crop" };
-  if (hints.printReady) return { label: "Ready", className: "conf-high" };
+  if (hints.printReady) {
+    // "Ready" (green) only when the extension is actually sure: a check-digit
+    // validated carrier barcode, or detector confidence at/above the trust floor.
+    // A geometrically-fine but uncertain crop (e.g. 0.86-0.899, no validated
+    // barcode) gets "Double-check" so staff verify the preview instead of
+    // trusting a confident-looking guess. No detection change — display only.
+    const sure = Boolean(label.carrierValidated)
+      || Number(label.confidence || 0) >= TRUSTED_LOCAL_CONFIDENCE;
+    return sure
+      ? { label: "Ready", className: "conf-high" }
+      : { label: "Double-check", className: "conf-mid" };
+  }
   return { label: "Review", className: "conf-mid" };
 }
 
@@ -1251,6 +1281,10 @@ async function expandToSourcePage(index) {
     setStatus("Still extracting — wait for it to finish, then try Expand.");
     return;
   }
+
+  // Owner-only telemetry: staff expanding to the source page means the auto-crop
+  // wasn't usable. Log the rejected auto-result so it surfaces in the weekly pull.
+  logLabelIssue("expand", label, state.file?.name || "");
 
   setStatus("Loading full source page — please wait...");
   els.extractButton.disabled = true;
@@ -1359,25 +1393,35 @@ function scheduleModelWarmup(delayMs = 2500) {
   }, delayMs);
 }
 
-// Quietly record when detection couldn't produce a clean label and fell back to
-// a crop/manual variant (or found nothing). Over time this reveals which senders
-// or carriers need a dedicated detection rule. View it via lab mode > Copy failure log.
-async function logDetectionFallback(label, fileName) {
+// Quietly record bad/uncertain labels so the owner can weekly pull them (lab mode
+// > Copy failure log) and report them for a dedicated detection rule. Captures
+// detection fallbacks/no-candidates AND manual corrections (the strongest "the
+// auto-crop was wrong" signal: staff re-cropped or expanded the chosen result).
+// Owner-only — never surfaced to counter staff. Local storage; never committed.
+const LABEL_LOG_MAX = 1500; // ~a busy counter week before the oldest entries roll off
+async function logLabelIssue(kind, label, fileName) {
   if (!chrome.storage?.local) return;
   try {
     const sender = await getStoredSenderInfo();
+    const width = Number(label?.width || 0);
+    const height = Number(label?.height || 0);
     const entry = {
       at: new Date().toISOString(),
+      kind,                                         // fallback | no-candidates | manual-crop | expand
       sender: sender?.email || sender?.name || "",
       carrier: label?.carrier || "",
+      validated: Boolean(label?.carrierValidated),
       reason: label ? (label.localReason || "unknown") : "no-candidates",
       confidence: label ? Number(label.confidence || 0) : 0,
+      size: width && height ? `${width}x${height}` : "",
+      aspect: width && height ? Number((width / height).toFixed(3)) : 0,
+      page: label?.pageCount ? `${label.sourcePage || 1}/${label.pageCount}` : String(label?.sourcePage || ""),
       fileName: fileName || ""
     };
     const data = await chrome.storage.local.get("labelFailureLog");
     const log = Array.isArray(data.labelFailureLog) ? data.labelFailureLog : [];
     log.push(entry);
-    await chrome.storage.local.set({ labelFailureLog: log.slice(-300) });
+    await chrome.storage.local.set({ labelFailureLog: log.slice(-LABEL_LOG_MAX) });
   } catch (_) {}
 }
 
