@@ -174,26 +174,17 @@
 
   <script src="../lib/pdf.min.js"></script>
   <script src="../lib/ort.min.js"></script>
+  <!-- Shared canonical detection stack (see dev/detector-stack.js). -->
+  <script src="detector-stack.js"></script>
   <script>
     // Served over plain http (python http.server), the browser happily keeps
-    // STALE cached copies of the detection scripts after an edit — a studio
-    // batch can silently grade old code. Cache-bust every page load; these are
-    // small local files, so the refetch costs nothing. document.write keeps
-    // the synchronous load order the studio modules depend on.
+    // STALE cached copies of these scripts after an edit — a studio batch can
+    // silently grade old code. Cache-bust every page load; these are small local
+    // files, so the refetch costs nothing. document.write keeps the synchronous
+    // load order the studio modules depend on (detection stack is loaded above).
     (function () {
       const v = Date.now();
       [
-        "../detection/crop-engine.js",
-        "../detection/pixel-analysis.js",
-        "../detection/carrier-utils.js", "../detection/page-text-cues.js",
-        "../detection/model-detector.js",
-        "../detection/barcode-decoder.js",
-        "../detection/detector-ranking.js",
-        "../detection/candidate-selection.js",
-        "../detection/barcode-confirmation.js",
-        "../detection/label-detector.js",
-        "../detection/pdf-processor.js",
-        "../detection/png-processor.js",
         "../config.js",
         "studio/core.js",
         "studio/stats.js",

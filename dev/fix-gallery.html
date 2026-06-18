@@ -39,13 +39,12 @@ canvas { border: 1px solid #ccc; display: block; }
 
 <script src="../lib/pdf.min.js"></script>
 <script src="../lib/ort.min.js"></script>
+<script src="detector-stack.js"></script>
 <script>
-// Cache-bust the detection stack on every load (same trick as test.html).
+// Page-specific scripts (the shared detection stack is loaded above).
 (function () {
   const v = Date.now();
-  ["../detection/crop-engine.js", "../detection/pixel-analysis.js", "../detection/carrier-utils.js", "../detection/page-text-cues.js", "../detection/model-detector.js",
-   "../detection/detector-ranking.js", "../detection/candidate-selection.js", "../detection/barcode-confirmation.js", "../detection/label-detector.js", "../detection/pdf-processor.js",
-   "../detection/png-processor.js", "../config.js"].forEach((src) => {
+  ["../config.js"].forEach((src) => {
     document.write('<script src="' + src + "?v=" + v + '"><\/script>');
   });
 })();

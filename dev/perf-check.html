@@ -13,17 +13,7 @@
 <script src="../lib/ort.min.js"></script>
 <!-- Bump v= when comparing builds: python http.server + browser cache otherwise
      serve stale detection scripts after an edit. -->
-<script src="../detection/crop-engine.js?v=4"></script>
-<script src="../detection/pixel-analysis.js?v=4"></script>
-<script src="../detection/carrier-utils.js?v=4"></script>
-  <script src="../detection/page-text-cues.js?v=4"></script>
-<script src="../detection/model-detector.js?v=4"></script>
-<script src="../detection/detector-ranking.js?v=4"></script>
-<script src="../detection/candidate-selection.js?v=4"></script>
-<script src="../detection/barcode-confirmation.js?v=4"></script>
-<script src="../detection/label-detector.js?v=4"></script>
-<script src="../detection/pdf-processor.js?v=4"></script>
-<script src="../detection/png-processor.js?v=4"></script>
+<script src="detector-stack.js"></script>
 <script src="../config.js?v=4"></script>
 <script>
 window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);

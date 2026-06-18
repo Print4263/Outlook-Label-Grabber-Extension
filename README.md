@@ -80,6 +80,7 @@ The setting is saved per device only.
 | `page-label-drag.js` | Drag-to-panel support |
 | `dev/test.html` | Training Studio entry point (not shipped) |
 | `dev/studio/` | Studio modules: pipeline runner, wins-by-detector stats, per-label trace log, 4×6 preview, fix-report export, barcode A/B compare |
+| `dev/detector-stack.js` | Shared canonical detection script loader for every dev harness page — one place to add a new detection module (mirrors the production `sidepanel.html` order) |
 | `dev/fix-check.html` | IoU scoring harness — runs real pipeline vs. tagged corrections |
 | `dev/one-label.html` | Single-label probe — runs one corpus file through the real pipeline and renders top candidates |
 | `dev/crop-diag.html` | Crop diagnostic harness — scans a corpus for crop-edge clipping and crop quality issues |
