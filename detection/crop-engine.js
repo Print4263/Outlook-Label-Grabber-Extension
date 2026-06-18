@@ -1040,7 +1040,9 @@
     if (text) cuts.push(clampChromeCut(text.from, height));
     if (options.allowAspectNeutralBottom === true) {
       const tail = bottomTailAfterQuietGap(rows, height);
-      if (tail) cuts.push(clampChromeCut(tail.from, height));
+      // Step a couple of sampled rows into the proven quiet gap so no antialiased
+      // top pixels from the URL/navigation band survive and falsely split output.
+      if (tail) cuts.push(clampChromeCut(tail.from - (tail.dense ? CHROME_ROW_STEP * 2 : 0), height));
     }
     return uniqueCuts(cuts);
   }
@@ -1148,7 +1150,9 @@
   }
 
   function looksLikeBottomChromeInk(row) {
-    return row.transitions >= 2 && row.dark >= 0.018 && row.dark <= 0.38 && row.color < 0.08;
+    return row.color >= 0.08
+      || row.dark >= 0.55
+      || (row.transitions >= 1.5 && row.dark >= 0.012 && row.dark < 0.45 && row.color < 0.08);
   }
 
   function bottomTailAfterQuietGap(rows, height) {
@@ -1156,6 +1160,8 @@
     let end = null;
     let start = null;
     let holes = 0;
+    let denseTail = false;
+    const maxInterBandGap = Math.max(CHROME_MIN_BAND * 3, Math.round(height * 0.035));
     for (let i = rows.length - 1; i >= 0; i -= 1) {
       const row = rows[i];
       const fromBottom = height - row.rel;
@@ -1163,19 +1169,20 @@
       if (looksLikeBottomChromeInk(row)) {
         if (!end) end = { row, index: i };
         start = { row, index: i };
+        if (row.color >= 0.08 || row.dark >= 0.55) denseTail = true;
         holes = 0;
         continue;
       }
       if (!end) continue;
       holes += CHROME_ROW_STEP;
-      if (holes <= CHROME_ROW_STEP * 3) continue;
+      if (holes <= (denseTail ? maxInterBandGap : CHROME_ROW_STEP * 3)) continue;
       break;
     }
     if (!start || !end) return null;
     const len = end.row.rel - start.row.rel + CHROME_ROW_STEP;
     if (len < CHROME_MIN_BAND) return null;
     if (quietRunLength(rows, start.index - 1, -1) < CHROME_MIN_BAND) return null;
-    return { from: start.row.rel, to: end.row.rel, len };
+    return { from: start.row.rel, to: end.row.rel, len, dense: denseTail };
   }
 
   function quietRunLength(rows, index, direction) {
@@ -1196,6 +1203,76 @@
     return [...new Set(cuts.map((value) => Math.round(value)))].sort((a, b) => a - b);
   }
 
+  // Remove only a very large, truly quiet trailing margin from an already-rendered
+  // IMAGE model crop. This operates on the output label (not the source page), so
+  // it can undo cropCanvas content-rescue reaching the page edge while preserving
+  // every active row plus an explicit safety margin. The model detector is the
+  // sole caller; PDFs and border crops never enter this path.
+  const QUIET_TAIL_MIN_RATIO = 0.18;
+  const QUIET_TAIL_ACTIVE_RATIO = 0.006;
+  function trimQuietImageTail(label, options = {}) {
+    const canvas = label?.canvas;
+    const sourceRect = label?.sourceRect;
+    if (!canvas || !sourceRect || canvas.width < 160 || canvas.height < 240) return label;
+    const data = pixelsFor(canvas);
+    const stepX = Math.max(1, Math.floor(canvas.width / 300));
+    const stepY = Math.max(1, Math.floor(canvas.height / 800));
+    const activeRows = [];
+    for (let y = 0; y < canvas.height; y += stepY) {
+      let dark = 0;
+      let samples = 0;
+      for (let x = 0; x < canvas.width; x += stepX) {
+        const i = (y * canvas.width + x) * 4;
+        if (data[i + 3] < 16) continue;
+        samples += 1;
+        const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        if (lum < 180) dark += 1;
+      }
+      activeRows.push({ y, active: samples > 0 && dark / samples >= QUIET_TAIL_ACTIVE_RATIO });
+    }
+    let lastActive = -1;
+    for (let i = 0; i < activeRows.length; i += 1) {
+      if (!activeRows[i].active) continue;
+      let support = 0;
+      for (let j = Math.max(0, i - 2); j <= Math.min(activeRows.length - 1, i + 2); j += 1) {
+        if (activeRows[j].active) support += 1;
+      }
+      // Ignore a lone antialiased/speckled row left at a just-trimmed chrome
+      // boundary; real label content sustains activity across nearby samples.
+      if (support >= 3) lastActive = activeRows[i].y;
+    }
+    if (lastActive < 0) return label;
+    const tail = canvas.height - Math.min(canvas.height, lastActive + stepY);
+    const minimumTailRatio = Number.isFinite(options.minimumTailRatio)
+      ? options.minimumTailRatio
+      : QUIET_TAIL_MIN_RATIO;
+    if (tail / canvas.height < minimumTailRatio) return label;
+    const margin = Math.max(12, Math.round(canvas.height * 0.012));
+    const nextHeight = Math.min(canvas.height, lastActive + stepY + margin);
+    if (nextHeight >= canvas.height) return label;
+    const beforeDistance = labelAspectDistance(canvas.width / canvas.height);
+    const afterDistance = labelAspectDistance(canvas.width / nextHeight);
+    if (options.requireAspectImprovement !== false && afterDistance >= beforeDistance - 0.02) return label;
+
+    const nextCanvas = document.createElement("canvas");
+    nextCanvas.width = canvas.width;
+    nextCanvas.height = nextHeight;
+    const context = nextCanvas.getContext("2d", { willReadFrequently: true });
+    context.fillStyle = "#fff";
+    context.fillRect(0, 0, nextCanvas.width, nextCanvas.height);
+    context.drawImage(canvas, 0, 0, canvas.width, nextHeight, 0, 0, canvas.width, nextHeight);
+    const next = canvasToLabel(nextCanvas);
+    next.sourceRect = {
+      x: sourceRect.x,
+      y: sourceRect.y,
+      width: sourceRect.width,
+      height: sourceRect.height * (nextHeight / canvas.height)
+    };
+    next.quietTailTrimmed = true;
+    next.quietTailPixels = canvas.height - nextHeight;
+    return next;
+  }
+
   window.LabelExtractorCrop = {
     autoCropCanvas,
     cropCanvas,
@@ -1209,6 +1286,7 @@
     barcodeBandStats,
     refineCardWithinRect,
     trimImageChromeBands,
+    trimQuietImageTail,
     // Band mass below this is too weak to trust for orientation decisions.
     FLIP_MIN_MASS,
     pixelsFor

@@ -7,6 +7,7 @@
     unionRects,
     expandRect,
     detectionRankScore,
+    contentSeparationScore,
     trace,
     screenshotPageMinAspect
   }) {
@@ -163,8 +164,15 @@
         rx.fillStyle = "#fff";
         rx.fillRect(0, 0, rc.width, rc.height);
         rx.drawImage(page.canvas, Math.round(refined.x), Math.round(refined.y), rc.width, rc.height, 0, 0, rc.width, rc.height);
-        const label = window.LabelExtractorCrop.canvasToLabel(rc);
-        candidate.cropRect = { x: refined.x, y: refined.y, width: refined.width, height: refined.height };
+        let label = window.LabelExtractorCrop.canvasToLabel(rc);
+        label.sourceRect = { x: refined.x, y: refined.y, width: refined.width, height: refined.height };
+        // Once browser chrome is proven and removed, a large quiet gap that sat
+        // between the label and that chrome is surrounding page whitespace, not
+        // useful 4x6 padding. Trim it without the usual aspect-improvement gate.
+        if (refined.chromeTrimmed && window.LabelExtractorCrop.trimQuietImageTail) {
+          label = window.LabelExtractorCrop.trimQuietImageTail(label, { requireAspectImprovement: false });
+        }
+        candidate.cropRect = label.sourceRect || { x: refined.x, y: refined.y, width: refined.width, height: refined.height };
         candidate.label = label;
         candidate.cardRefined = true;
         candidate.cardRefineAxis = refined.axis || "vertical";
@@ -176,6 +184,31 @@
           to: [Math.round(refined.width), Math.round(refined.height)].join("x")
         });
       } catch (_) { /* keep the original crop on any failure */ }
+    }
+
+    const VALIDATED_CONFIDENCE_MIN_DETECTOR = 0.80;
+    const VALIDATED_CONFIDENCE_FLOOR = 0.90;
+    const VALIDATED_CONFIDENCE_MAX_SEPARATION = 0.18;
+
+    function maybeCalibrateValidatedConfidence(candidate) {
+      if (!candidate?.carrierValidated || !candidate.barcodeSignal || !candidate.label) return;
+      const confidence = Number(candidate.confidence || 0);
+      if (confidence < VALIDATED_CONFIDENCE_MIN_DETECTOR || confidence >= VALIDATED_CONFIDENCE_FLOOR) return;
+      if (candidate.needsCrop || (Array.isArray(candidate.warnings) && candidate.warnings.length)) return;
+      const separation = typeof contentSeparationScore === "function"
+        ? contentSeparationScore(candidate.label.canvas)
+        : 1;
+      if (separation >= VALIDATED_CONFIDENCE_MAX_SEPARATION) return;
+      candidate.confidence = VALIDATED_CONFIDENCE_FLOOR;
+      candidate.validatedConfidenceCalibrated = true;
+      trace("validated-confidence", {
+        reason: candidate.reason || "",
+        carrier: candidate.carrier || "",
+        from: confidence,
+        to: candidate.confidence,
+        separation: Number(separation.toFixed(3)),
+        note: "independent check-digit validation calibrated an already-strong complete-label detection"
+      });
     }
 
     async function confirmBarcodeSignal(ranked, pages) {
@@ -195,7 +228,10 @@
       });
 
       if (!cfg.RERANK || topSignal) {
-        if (topSignal) await maybeRefineCard(top, pages);
+        if (topSignal) {
+          await maybeRefineCard(top, pages);
+          maybeCalibrateValidatedConfidence(top);
+        }
         return ranked;
       }
 
@@ -217,6 +253,7 @@
             note: "near-tie candidate with a confident carrier barcode promoted over a top crop that decoded none"
           });
           await maybeRefineCard(candidate, pages);
+          maybeCalibrateValidatedConfidence(candidate);
           return [candidate, ...ranked.filter((c) => c !== candidate)];
         }
       }

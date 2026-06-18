@@ -100,6 +100,11 @@
       rect = window.LabelExtractorCrop.clampRectTopBelowBlockers(rect, best.page.cutLineRects, best.page.canvas);
     }
 
+    let label = await window.LabelExtractorCrop.cropCanvas(best.page.canvas, rect);
+    if (best.page.type === "png" && window.LabelExtractorCrop.trimQuietImageTail) {
+      label = window.LabelExtractorCrop.trimQuietImageTail(label);
+    }
+
     return {
       confidence: Math.max(best.prediction.confidence, best.prediction.acceptedConfidence),
       reason: "trained-model",
@@ -110,7 +115,8 @@
       sourceWidth: best.page.width || best.page.canvas.width,
       sourceHeight: best.page.height || best.page.canvas.height,
       cropRect: rect,
-      label: await window.LabelExtractorCrop.cropCanvas(best.page.canvas, rect)
+      label,
+      quietTailTrimmed: Boolean(label?.quietTailTrimmed)
     };
   }
 

@@ -13,6 +13,10 @@
   // detectors (border scans, barcode grid, snap scoring) each re-read the same
   // canvas. Share one read instead.
   const canvasDataCache = new WeakMap();
+  // Candidate-label completeness is consumed by both selection and barcode
+  // calibration. Cache the pure row-profile result on the rendered label canvas
+  // so those consumers never repeat the same scan.
+  const contentSeparationCache = new WeakMap();
 
   function getCanvasData(canvas) {
     // Prefer the shared snapshot in crop-engine so the same canvas isn't read
@@ -25,6 +29,51 @@
     data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
     canvasDataCache.set(canvas, data);
     return data;
+  }
+
+  // Fraction of the rendered output occupied by its longest sustained quiet row
+  // run BETWEEN content-bearing rows. A large value means two visually separate
+  // blocks were annexed into one crop (or a border selected only one sparse block).
+  // Edge whitespace is intentionally excluded; trim helpers own edge cleanup.
+  function contentSeparationScore(canvas) {
+    if (!canvas || canvas.width < 40 || canvas.height < 80) return 0;
+    const cached = contentSeparationCache.get(canvas);
+    if (cached !== undefined) return cached;
+    const data = getCanvasData(canvas);
+    const stepX = Math.max(1, Math.floor(canvas.width / 300));
+    const stepY = Math.max(1, Math.floor(canvas.height / 800));
+    const active = [];
+    for (let y = 0; y < canvas.height; y += stepY) {
+      let dark = 0;
+      let samples = 0;
+      for (let x = 0; x < canvas.width; x += stepX) {
+        const i = (y * canvas.width + x) * 4;
+        if (data[i + 3] < 16) continue;
+        samples += 1;
+        const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        if (lum < 180) dark += 1;
+      }
+      active.push(samples > 0 && dark / samples >= 0.006);
+    }
+    const first = active.indexOf(true);
+    const last = active.lastIndexOf(true);
+    let longest = 0;
+    let quietStart = -1;
+    if (first >= 0 && last > first) {
+      for (let i = first; i <= last + 1; i += 1) {
+        if (i <= last && !active[i]) {
+          if (quietStart < 0) quietStart = i;
+          continue;
+        }
+        if (quietStart >= 0) {
+          longest = Math.max(longest, (i - quietStart) * stepY);
+          quietStart = -1;
+        }
+      }
+    }
+    const score = Math.min(1, longest / canvas.height);
+    contentSeparationCache.set(canvas, score);
+    return score;
   }
 
   function detectDashedBorder(canvas) {
@@ -488,6 +537,7 @@
     findBarcodeRegions,
     findBarcodeRegionsInGrid,
     expandRectToClippedBarcodes,
-    borderLineScore
+    borderLineScore,
+    contentSeparationScore
   };
 })();

@@ -47,7 +47,8 @@
     findBarcodeRegions,
     findBarcodeRegionsInGrid,
     expandRectToClippedBarcodes,
-    borderLineScore
+    borderLineScore,
+    contentSeparationScore
   } = window.LabelExtractorPixelAnalysis;
   const EMBEDDED_USPS_BORDER_OVERRIDE_CONFIDENCE = 0.97;
 
@@ -1487,6 +1488,7 @@
     compareDetections,
     detectionRankScore,
     labelShapeRankScore,
+    contentSeparationScore,
     trace,
     screenshotPageMinAspect: SCREENSHOT_PAGE_MIN_ASPECT
   });
@@ -1496,6 +1498,7 @@
     unionRects,
     expandRect,
     detectionRankScore,
+    contentSeparationScore,
     trace,
     screenshotPageMinAspect: SCREENSHOT_PAGE_MIN_ASPECT
   });

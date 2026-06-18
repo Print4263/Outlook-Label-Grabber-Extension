@@ -9,6 +9,7 @@
     compareDetections,
     detectionRankScore,
     labelShapeRankScore,
+    contentSeparationScore,
     trace,
     screenshotPageMinAspect
   }) {
@@ -132,6 +133,8 @@
     const MODEL_OVER_BORDER_MAX_ASPECT_DISTANCE = 0.45;
     const MODEL_OVER_BORDER_KEEP_BORDER_MAX_DISTANCE = 0.06;
     const MODEL_OVER_BORDER_MIN_SHAPE_ADVANTAGE = 0.08;
+    const MODEL_OVER_SEPARATED_BORDER_MIN_GAP = 0.20;
+    const MODEL_OVER_SEPARATED_BORDER_MAX_MODEL_GAP = 0.10;
     const MODEL_BORDER_REASONS = ["solid-border", "dashed-border"];
     // Tall phone screenshots: a "border" whose crop is basically the whole screen
     // found the screen bezel/app chrome, not a label frame. There the model's box
@@ -144,8 +147,10 @@
       if (!MODEL_BORDER_REASONS.includes(top?.reason) || !top.cropRect) return ranked;
       const model = ranked.find((candidate) => candidate?.reason === "trained-model");
       if (!model || model.pageIndex !== top.pageIndex || !model.cropRect) return ranked;
-      if (labelAspectDistance(model.cropRect) > MODEL_OVER_BORDER_MAX_ASPECT_DISTANCE) return ranked;
-      if (shouldKeepBetterShapedBorder(top, model)) return ranked;
+      const separatedBorderOverride = shouldPromoteCleanerModelOverSeparatedBorder(top, model);
+      if (labelAspectDistance(model.cropRect) > MODEL_OVER_BORDER_MAX_ASPECT_DISTANCE
+        && !(separatedBorderOverride && labelOutputAspectDistance(model) <= MODEL_OVER_BORDER_MAX_ASPECT_DISTANCE)) return ranked;
+      if (shouldKeepBetterShapedBorder(top, model) && !separatedBorderOverride) return ranked;
       const confidence = Number(model.confidence || 0);
       const confident = confidence >= MODEL_OVER_BORDER_MIN_CONFIDENCE;
       if (!confident && !(confidence >= SCREENSHOT_MODEL_MIN_CONFIDENCE
@@ -155,11 +160,25 @@
         borderRect: top.cropRect,
         modelRect: model.cropRect,
         modelConfidence: model.confidence,
-        note: confident
+        note: separatedBorderOverride
+          ? "border output contains a large quiet split; equally confident complete model output promoted"
+          : confident
           ? "confident, label-shaped trained-model promoted over border crop"
           : "screenshot-shaped page: whole-screen border crop demoted below accepted model box"
       });
       return [model, ...ranked.filter((candidate) => candidate !== model)];
+    }
+
+    function shouldPromoteCleanerModelOverSeparatedBorder(border, model) {
+      if (typeof contentSeparationScore !== "function") return false;
+      const borderConfidence = Number(border?.confidence || 0);
+      const modelConfidence = Number(model?.confidence || 0);
+      if (modelConfidence < MODEL_OVER_BORDER_MIN_CONFIDENCE || modelConfidence < borderConfidence) return false;
+      const borderGap = contentSeparationScore(border?.label?.canvas);
+      const modelGap = contentSeparationScore(model?.label?.canvas);
+      return borderGap >= MODEL_OVER_SEPARATED_BORDER_MIN_GAP
+        && modelGap <= MODEL_OVER_SEPARATED_BORDER_MAX_MODEL_GAP
+        && borderGap - modelGap >= 0.10;
     }
 
     function shouldKeepBetterShapedBorder(border, model) {
