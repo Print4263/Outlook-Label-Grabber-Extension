@@ -1235,56 +1235,11 @@
     return /RETURN MAILING LABEL|USPS TRACKING|UPS TRACKING|FEDEX TRACKING|GROUND ADVANTAGE|SHIP TO/.test(value);
   }
 
-  function compareDetections(a, b) {
-    if (shouldBorderOverrideEmbeddedUsps(a, b)) return -1;
-    if (shouldBorderOverrideEmbeddedUsps(b, a)) return 1;
-    if (a?.reason === "embedded-usps-label" && b?.reason !== "embedded-usps-label") return -1;
-    if (b?.reason === "embedded-usps-label" && a?.reason !== "embedded-usps-label") return 1;
-
-    const scoreA = detectionRankScore(a);
-    const scoreB = detectionRankScore(b);
-    return scoreB - scoreA;
-  }
-
   function shouldBorderOverrideEmbeddedUsps(borderCandidate, otherCandidate) {
     if (otherCandidate?.reason !== "embedded-usps-label") return false;
     if (!["dashed-border", "solid-border"].includes(borderCandidate?.reason)) return false;
     if (Number(borderCandidate.confidence || 0) < EMBEDDED_USPS_BORDER_OVERRIDE_CONFIDENCE) return false;
     return cropContainsBarcodeOrUnknown(borderCandidate, borderCandidate.pages || []);
-  }
-
-  function detectionRankScore(candidate) {
-    const page = findPage(candidate.pages || [], candidate.pageIndex);
-    return Number(candidate.qualityScore || 0)
-      + Number(candidate.confidence || 0)
-      + labelTextScore(page?.text)
-      + carrierTextPreferenceScore(candidate, page)
-      + barcodeContainmentPenalty(candidate, page)
-      + labelShapeRankScore(candidate)
-      + orderDetailsPagePenalty(page);
-  }
-
-  // Same components as detectionRankScore, itemized for the dev studio log so the
-  // ranking is explainable per candidate. total must equal detectionRankScore().
-  function scoreBreakdown(candidate) {
-    const page = findPage(candidate?.pages || [], candidate?.pageIndex);
-    const qualityScore = Number(candidate?.qualityScore || 0);
-    const confidence = Number(candidate?.confidence || 0);
-    const textScore = labelTextScore(page?.text);
-    const carrierPref = carrierTextPreferenceScore(candidate, page);
-    const barcodePenalty = barcodeContainmentPenalty(candidate, page);
-    const shapeScore = labelShapeRankScore(candidate);
-    const orderPenalty = orderDetailsPagePenalty(page);
-    return {
-      qualityScore,
-      confidence,
-      labelTextScore: textScore,
-      carrierPref,
-      barcodePenalty,
-      shapeScore,
-      orderPenalty,
-      total: qualityScore + confidence + textScore + carrierPref + barcodePenalty + shapeScore + orderPenalty
-    };
   }
 
   // A 4x6 thermal label prints best when the crop already IS 4x6-shaped
@@ -1293,24 +1248,6 @@
   // (full phone screenshots, banner strips) so a clean 4x6 candidate sits
   // above them in the picker. Sized to order border/model candidates
   // (quality 2-4) without upsetting the embedded-label hierarchy (10+).
-  const LABEL_SHAPE_STRONG_DISTANCE = 0.08;
-  const LABEL_SHAPE_NEAR_DISTANCE = 0.15;
-  const LABEL_SHAPE_EXTREME_MIN_ASPECT = 0.45;
-  const LABEL_SHAPE_EXTREME_MAX_ASPECT = 2.3;
-
-  function labelShapeRankScore(candidate) {
-    const label = candidate?.label;
-    const width = Number(label?.width || 0);
-    const height = Number(label?.height || 0);
-    if (!width || !height) return 0;
-    const aspect = width / height;
-    const distance = Math.min(Math.abs(aspect - 2 / 3), Math.abs(aspect - 1.5));
-    if (distance <= LABEL_SHAPE_STRONG_DISTANCE) return 0.8;
-    if (distance <= LABEL_SHAPE_NEAR_DISTANCE) return 0.4;
-    if (aspect < LABEL_SHAPE_EXTREME_MIN_ASPECT || aspect > LABEL_SHAPE_EXTREME_MAX_ASPECT) return -0.8;
-    return 0;
-  }
-
   // Candidates living on a pure order-details page (packing slip, invoice,
   // order summary) sink below same-document label pages: the page talks about
   // the ORDER but shows no shipping-label wording at all. Pages that carry
@@ -2391,6 +2328,20 @@
       height: Math.min(canvas.height - y, rect.height + growY * 2)
     };
   }
+
+  const {
+    compareDetections,
+    detectionRankScore,
+    scoreBreakdown,
+    labelShapeRankScore
+  } = window.LabelExtractorDetectorRanking.create({
+    findPage,
+    labelTextScore,
+    carrierTextPreferenceScore,
+    barcodeContainmentPenalty,
+    orderDetailsPagePenalty,
+    shouldBorderOverrideEmbeddedUsps
+  });
 
   window.LabelExtractorDetector = {
     detectPdfPages,

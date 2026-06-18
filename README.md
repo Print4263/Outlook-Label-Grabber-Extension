@@ -59,7 +59,8 @@ The setting is saved per device only.
 | `app/downloads.js` | Recent-downloads list, intake, Use/Show/Clear/preview |
 | `app/crop.js` | Crop editor, auto-orient, rotate-to-portrait |
 | `app/detect.js` | Turns detector output into ranked candidates |
-| `detection/label-detector.js` | Full cascade + ranking (shape score, packing-slip penalty, carrier/barcode scoring, barcode-decode confirmation) |
+| `detection/label-detector.js` | Detection cascade, candidate generation, and barcode-decode confirmation |
+| `detection/detector-ranking.js` | Candidate ordering, additive score breakdown, and 4x6 shape scoring |
 | `detection/barcode-decoder.js` | On-device barcode decode (zxing-wasm) → carrier + tracking-number classification, GS1/IMpb field parse |
 | `detection/pdf-processor.js` | pdf.js page render, cut-line detection, twin-split guard |
 | `detection/png-processor.js` | Image decode, upscale to ~3000 px for phone screenshots |
