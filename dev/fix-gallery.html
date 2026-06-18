@@ -44,7 +44,7 @@ canvas { border: 1px solid #ccc; display: block; }
 (function () {
   const v = Date.now();
   ["../detection/crop-engine.js", "../detection/pixel-analysis.js", "../detection/carrier-utils.js", "../detection/model-detector.js",
-   "../detection/detector-ranking.js", "../detection/barcode-confirmation.js", "../detection/label-detector.js", "../detection/pdf-processor.js",
+   "../detection/detector-ranking.js", "../detection/candidate-selection.js", "../detection/barcode-confirmation.js", "../detection/label-detector.js", "../detection/pdf-processor.js",
    "../detection/png-processor.js", "../config.js"].forEach((src) => {
     document.write('<script src="' + src + "?v=" + v + '"><\/script>');
   });

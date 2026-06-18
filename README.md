@@ -62,6 +62,7 @@ The setting is saved per device only.
 | `detection/label-detector.js` | Detection cascade and candidate generation |
 | `detection/pixel-analysis.js` | Cached border and barcode pixel scans used by the detection cascade |
 | `detection/detector-ranking.js` | Candidate ordering, additive score breakdown, and 4x6 shape scoring |
+| `detection/candidate-selection.js` | Post-detection filtering and winner-promotion policy |
 | `detection/barcode-confirmation.js` | Candidate barcode confirmation, metadata enrichment, and near-tie reranking |
 | `detection/barcode-decoder.js` | On-device barcode decode (zxing-wasm) → carrier + tracking-number classification, GS1/IMpb field parse |
 | `detection/pdf-processor.js` | pdf.js page render, cut-line detection, twin-split guard |
