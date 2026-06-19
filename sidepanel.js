@@ -992,6 +992,7 @@ function clearLoadedLabelState() {
   els.clearButton.classList.remove("needs-clear");
   els.clearReminder.hidden = true;
   els.printSettings.classList.add("inactive");
+  setManualTipVisible(true);
   updateSheetPreview();
 }
 
@@ -1186,6 +1187,7 @@ async function extractSelectedFile() {
   setLoadingProgress(12);
   els.extractButton.disabled = true;
   els.results.replaceChildren();
+  setManualTipVisible(true);
   setStatus("Extracting label - please wait...", "loading");
 
   try {
@@ -1288,6 +1290,14 @@ function delay(ms) {
 
 // --- Detection candidate building extracted to app/detect.js ---
 
+// The amber troubleshooting tips ("Download not working? / Crop wrong?") only
+// help when extraction failed or the crop looks off. Hide them while a good
+// label is on screen so a clean success isn't cluttered with noise; they return
+// on a failed/empty result and on clear, so the next person still gets guidance.
+function setManualTipVisible(visible) {
+  if (els.manualCropTip) els.manualCropTip.hidden = !visible;
+}
+
 function renderResults(payload) {
   els.results.replaceChildren();
 
@@ -1297,6 +1307,7 @@ function renderResults(payload) {
     empty.textContent = payload.warnings?.join(" ") || "No printable label found. Try the original PDF or image.";
     els.results.append(empty);
     els.printSettings.classList.add("inactive");
+    setManualTipVisible(true);
     return;
   }
 
@@ -1389,6 +1400,12 @@ function renderResults(payload) {
     if (index === state.selectedLabelIndex) card.classList.add("selected");
     els.results.append(card);
   });
+
+  // A "good result" is one whose crop looks print-ready; only then is the
+  // troubleshooting block noise. Anything that needs a crop/rotate/review keeps
+  // the tips visible because they are relevant.
+  const primaryLabel = payload.labels[state.selectedLabelIndex] || payload.labels[0];
+  setManualTipVisible(!(primaryLabel && getLabelActionHints(primaryLabel).printReady));
 }
 
 function makeVariantSwitcher(labels, selectedIndex) {
