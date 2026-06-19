@@ -1501,3 +1501,39 @@ h2 {
   color: #047857;
   cursor: default;
 }
+
+/* Result-card action size hierarchy (Phase 1 / B3 follow-up).
+   Print (primary) > Crop / Rotate / Expand (default) > Tighten/Loosen. */
+.label-action-print {
+  min-width: 124px;
+  min-height: 56px;
+  padding: 14px 22px;
+  font-size: 17px;
+}
+
+/* Tighten/Loosen: smallest, bare +/- signs, pushed clear of the main buttons. */
+.nibble-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding-left: 10px;
+}
+.label-action-nibble {
+  min-width: 42px;
+  min-height: 42px;
+  padding: 0;
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+  border-color: #94a3b8;
+  color: #1f2937;
+  background: linear-gradient(180deg, #f8fafc, #eef2f7);
+}
+.label-action-nibble:hover {
+  background: linear-gradient(180deg, #eef2f7, #e2e8f0);
+}
+.label-action-nibble:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}

@@ -54,7 +54,21 @@ function localDetectionToLabel(result) {
     localReason: result.reason,
     needsCrop: likelyPartial || Boolean(result.needsCrop),
     twinLabelIndex: result.twinLabelIndex || null,
-    twinLabelCount: result.twinLabelCount || null
+    twinLabelCount: result.twinLabelCount || null,
+    // Source-page mapping for the result-card Tighten/Loosen nibble: where this
+    // crop sits within its rendered page, so the nibble can re-crop outward as
+    // well as inward. Additive metadata only - detection, ranking, candidate
+    // selection, and dedupe never read these fields.
+    sourceRect: result.cropRect && Number(result.sourceWidth) && Number(result.sourceHeight)
+      ? {
+          x: Number(result.cropRect.x) || 0,
+          y: Number(result.cropRect.y) || 0,
+          width: Number(result.cropRect.width) || 0,
+          height: Number(result.cropRect.height) || 0
+        }
+      : null,
+    sourceWidth: Number(result.sourceWidth) || 0,
+    sourceHeight: Number(result.sourceHeight) || 0
   };
   defineLazyBase64(label, source);
   return label;

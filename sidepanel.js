@@ -16,6 +16,7 @@ const state = {
   selectedLabelIndex: -1,
   cropTargetIndex: -1,
   cropRect: { x: 0.05, y: 0.05, width: 0.9, height: 0.9 },
+  nibble: null,
   downloadsRefreshTimer: null,
   downloadPreviewUrl: "",
   inactivityTimer: null,
@@ -1082,7 +1083,9 @@ function renderResults(payload) {
     const cropButton = makeCropButton(index, actionHints);
     const expandButton = makeExpandButton(index, label);
     const printButton = makePrintButton(index, label, actionHints);
-    actions.append(rotateButton, cropButton, printButton, expandButton);
+    const nibbleControls = makeNibbleControls(index, label);
+    actions.append(printButton, cropButton, rotateButton, expandButton);
+    if (nibbleControls) actions.append(nibbleControls);
 
     if (preview.tagName === "IMG") {
       preview.addEventListener("load", () => {
@@ -1293,6 +1296,267 @@ function makeCropButton(index, actionHints) {
   decorateActionButton(button, "crop", actionHints.crop);
   button.addEventListener("click", () => openCropEditor(index));
   return button;
+}
+
+// --- Result-card Tighten/Loosen crop nibble (Phase 1 / B3) -------------------
+// Two small buttons per card that step the crop inward (-) or outward (+) without
+// opening the editor. State lives on `state.nibble` as a baseline rect + an
+// integer level, so every tap recomputes from the baseline (exact and reversible)
+// and level 0 restores the original auto-crop untouched. When the cached source
+// PAGE is available we crop from it (true inward AND outward nibble); otherwise we
+// fall back to the label's own image (tighten works; loosen points to Expand).
+// Straight pixel copy only - never the content-aware crop, which would re-absorb
+// chrome on tighten or re-trim on loosen. App-layer only: nothing here touches
+// detection, ranking, candidate selection, or crop-engine.
+const NIBBLE_STEP = 0.04;             // loosen: fraction of the baseline crop added per level, per edge pair (feel the user signed off on)
+const NIBBLE_MIN_BASE_FRACTION = 0.4; // floor for the uniform-inset tighten fallback
+const TIGHTEN_GAP_FRACTION = 0.25;    // tighten: fraction of the remaining gap to the label box closed per level
+const TIGHTEN_UNIFORM_STEP = 0.025;   // tighten fallback (no content box found): gentler than a loosen step
+
+function makeNibbleControls(index, label) {
+  if (label?.outputMimeType === "application/pdf") return null;
+  const group = document.createElement("div");
+  group.className = "nibble-controls";
+
+  const tighten = document.createElement("button");
+  tighten.type = "button";
+  tighten.className = "label-action label-action-nibble";
+  tighten.textContent = "−";
+  tighten.setAttribute("aria-label", "Tighten crop");
+  tighten.title = "Tighten - crop in a little (remove an even margin all around)";
+  tighten.addEventListener("click", () => nibbleCrop(index, -1));
+
+  const loosen = document.createElement("button");
+  loosen.type = "button";
+  loosen.className = "label-action label-action-nibble";
+  loosen.textContent = "+";
+  loosen.setAttribute("aria-label", "Loosen crop");
+  loosen.title = "Loosen - crop out a little (add back an even margin all around)";
+  loosen.addEventListener("click", () => nibbleCrop(index, 1));
+
+  group.append(tighten, loosen);
+  return group;
+}
+
+async function nibbleCrop(index, direction) {
+  const current = state.results[index];
+  if (!current) return;
+
+  // Rebuild the baseline whenever a different card, or a non-nibble action
+  // (rotate/crop/expand/new extraction), replaced what we last produced here.
+  let nib = state.nibble;
+  if (!nib || nib.index !== index || nib.lastResult !== current) {
+    nib = await buildNibbleBaseline(index, current);
+    if (!nib) {
+      setStatus("Tighten/Loosen isn't available for this label - use Crop or Expand.");
+      return;
+    }
+    state.nibble = nib;
+  }
+
+  const nextLevel = nib.level + direction;
+  const rect = rectForNibbleLevel(nib, nextLevel);
+  if (!rect) {
+    setStatus(direction > 0
+      ? "Can't loosen any further - use Expand to recover more of the page."
+      : "Can't tighten any further.");
+    return;
+  }
+
+  let nextLabel;
+  if (nextLevel === 0) {
+    nextLabel = nib.original;
+  } else {
+    const canvas = straightCropCanvas(nib.source, rect);
+    const named = labelFromCanvas(canvas, nib.original, nibbleVariantName(nib.original, nextLevel));
+    // labelFromCanvas spreads the original (carrying its sourceCanvas), but
+    // autoOrientLabel prefers sourceCanvas over base64 - so without this it would
+    // orient the ORIGINAL canvas and throw away this nibble. Null it so the
+    // freshly cropped base64 is what gets oriented.
+    named.sourceCanvas = null;
+    const [oriented] = await autoOrientLabel(named);
+    nextLabel = oriented;
+  }
+
+  nib.level = nextLevel;
+  nib.lastResult = nextLabel;
+  state.results[index] = nextLabel;
+  state.selectedLabelIndex = index;
+  renderResults({ labels: state.results });
+  updateSheetPreview();
+  setStatus(nextLevel === 0
+    ? "Crop reset to the original."
+    : `Crop ${nextLevel < 0 ? "tightened" : "loosened"} (${nextLevel > 0 ? "+" : ""}${nextLevel}).`);
+}
+
+async function buildNibbleBaseline(index, label) {
+  // Prefer the cached source page: it holds the pixels outside the current crop,
+  // so loosen can grow the crop back outward, not just undo a tighten.
+  const page = pageCanvasForLabel(label);
+  const sourceWidth = Number(label?.sourceWidth || 0);
+  const sourceHeight = Number(label?.sourceHeight || 0);
+  if (page && label?.sourceRect && sourceWidth && sourceHeight
+      && Math.abs(page.width - sourceWidth) <= 2 && Math.abs(page.height - sourceHeight) <= 2) {
+    const base = clampRectToCanvas(label.sourceRect, page);
+    if (base) {
+      return { index, source: page, baseRect: base, tightRect: contentRectWithin(page, base), original: label, level: 0, lastResult: label, canLoosen: true };
+    }
+  }
+
+  // Fallback: crop the label's own image. Tighten works; loosen has no outward
+  // pixels here, so it is capped at the original crop and nudges toward Expand.
+  const img = await loadImage(labelToDataUrl(label)).catch(() => null);
+  if (!img) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth || img.width;
+  canvas.height = img.naturalHeight || img.height;
+  if (!canvas.width || !canvas.height) return null;
+  canvas.getContext("2d").drawImage(img, 0, 0);
+  const base = { x: 0, y: 0, width: canvas.width, height: canvas.height };
+  return { index, source: canvas, baseRect: base, tightRect: contentRectWithin(canvas, base), original: label, level: 0, lastResult: label, canLoosen: false };
+}
+
+function pageCanvasForLabel(label) {
+  const pageNumber = Number(label?.sourcePage || 0);
+  if (!pageNumber) return null;
+  const page = (state.cachedPages || []).find(
+    (entry) => entry?.canvas && (Number(entry.pageIndex || 0) + 1) === pageNumber
+  );
+  return page?.canvas || null;
+}
+
+function rectForNibbleLevel(nib, level) {
+  const base = nib.baseRect;
+  if (level === 0) return { ...base };
+
+  if (level < 0) {
+    // Tighten homes in on the actual label - the dark-content box - so it trims
+    // the emptiest margins first instead of shaving all four edges equally, and
+    // converges on the label rather than over-cropping into it.
+    const target = nib.tightRect;
+    if (target && rectIsInside(target, base) && rectArea(target) < rectArea(base) * 0.98) {
+      const steps = Math.abs(level);
+      const t = Math.min(1, steps * TIGHTEN_GAP_FRACTION);
+      if (t >= 1 && steps > Math.ceil(1 / TIGHTEN_GAP_FRACTION)) return null; // already snug on the label
+      const x = base.x + (target.x - base.x) * t;
+      const y = base.y + (target.y - base.y) * t;
+      const right = (base.x + base.width) + ((target.x + target.width) - (base.x + base.width)) * t;
+      const bottom = (base.y + base.height) + ((target.y + target.height) - (base.y + base.height)) * t;
+      return roundRect(x, y, right - x, bottom - y);
+    }
+    // No usable content box (already snug, or unreadable): gentle uniform inset.
+    return uniformNibbleRect(nib, level, TIGHTEN_UNIFORM_STEP);
+  }
+
+  // Loosen: uniform outward, the feel the user signed off on.
+  if (!nib.canLoosen) return null;
+  return uniformNibbleRect(nib, level, NIBBLE_STEP);
+}
+
+function uniformNibbleRect(nib, level, step) {
+  const base = nib.baseRect;
+  const src = nib.source;
+  const dx = base.width * step * level;
+  const dy = base.height * step * level;
+  let x = base.x - dx;
+  let y = base.y - dy;
+  let w = base.width + 2 * dx;
+  let h = base.height + 2 * dy;
+
+  if (x < 0) { w += x; x = 0; }
+  if (y < 0) { h += y; y = 0; }
+  if (x + w > src.width) w = src.width - x;
+  if (y + h > src.height) h = src.height - y;
+
+  if (level < 0 && (w < base.width * NIBBLE_MIN_BASE_FRACTION || h < base.height * NIBBLE_MIN_BASE_FRACTION)) {
+    return null;
+  }
+  if (w < 8 || h < 8) return null;
+  return roundRect(x, y, w, h);
+}
+
+function roundRect(x, y, width, height) {
+  return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
+}
+
+function rectArea(rect) {
+  return Math.max(0, rect.width) * Math.max(0, rect.height);
+}
+
+function rectIsInside(inner, outer) {
+  return inner.x >= outer.x - 1
+    && inner.y >= outer.y - 1
+    && inner.x + inner.width <= outer.x + outer.width + 1
+    && inner.y + inner.height <= outer.y + outer.height + 1;
+}
+
+// Dark-content bounding box inside `rect` of the source canvas, padded slightly so
+// the label's own edge ink is never shaved. Returns source-pixel coords, or null
+// when the region is blank/uniform or the canvas can't be read.
+function contentRectWithin(source, rect) {
+  const x0 = clamp(Math.round(rect.x), 0, source.width - 1);
+  const y0 = clamp(Math.round(rect.y), 0, source.height - 1);
+  const w = clamp(Math.round(rect.width), 1, source.width - x0);
+  const h = clamp(Math.round(rect.height), 1, source.height - y0);
+
+  let data;
+  try {
+    const ctx = source.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+    data = ctx.getImageData(x0, y0, w, h).data;
+  } catch (_) {
+    return null;
+  }
+
+  const step = Math.max(2, Math.floor(Math.min(w, h) / 700));
+  let left = w, top = h, right = -1, bottom = -1;
+  for (let y = 0; y < h; y += step) {
+    for (let x = 0; x < w; x += step) {
+      const i = (y * w + x) * 4;
+      if (data[i + 3] < 24) continue;
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (lum > 225) continue;
+      if (x < left) left = x;
+      if (y < top) top = y;
+      if (x > right) right = x;
+      if (y > bottom) bottom = y;
+    }
+  }
+  if (right <= left || bottom <= top) return null;
+
+  const padX = Math.max(4, Math.round(w * 0.02));
+  const padY = Math.max(4, Math.round(h * 0.02));
+  const cx = clamp(x0 + left - padX, x0, x0 + w);
+  const cy = clamp(y0 + top - padY, y0, y0 + h);
+  const cRight = clamp(x0 + right + step + padX, cx + 1, x0 + w);
+  const cBottom = clamp(y0 + bottom + step + padY, cy + 1, y0 + h);
+  return { x: cx, y: cy, width: cRight - cx, height: cBottom - cy };
+}
+
+function clampRectToCanvas(rect, canvas) {
+  const x = clamp(Math.round(Number(rect.x) || 0), 0, canvas.width - 1);
+  const y = clamp(Math.round(Number(rect.y) || 0), 0, canvas.height - 1);
+  const w = clamp(Math.round(Number(rect.width) || 0), 1, canvas.width - x);
+  const h = clamp(Math.round(Number(rect.height) || 0), 1, canvas.height - y);
+  if (w < 8 || h < 8) return null;
+  return { x, y, width: w, height: h };
+}
+
+function straightCropCanvas(source, rect) {
+  const canvas = document.createElement("canvas");
+  canvas.width = rect.width;
+  canvas.height = rect.height;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, rect.width, rect.height);
+  ctx.drawImage(source, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+  return canvas;
+}
+
+function nibbleVariantName(original, level) {
+  const base = String(original?.variantName || "Crop");
+  return `${base} (${level < 0 ? "tightened" : "loosened"} ${Math.abs(level)})`;
 }
 
 function makePrintButton(index, label, actionHints) {
