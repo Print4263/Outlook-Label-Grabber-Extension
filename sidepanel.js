@@ -1440,7 +1440,11 @@ async function logLabelIssue(kind, label, fileName) {
     const log = Array.isArray(data.labelFailureLog) ? data.labelFailureLog : [];
     log.push(entry);
     await chrome.storage.local.set({ labelFailureLog: log.slice(-LABEL_LOG_MAX) });
-  } catch (_) {}
+  } catch (error) {
+    // Surface instead of swallowing — a silent failure here is why a "didn't
+    // record" issue is hard to diagnose. Lab owners can see it in the console.
+    console.warn("[Label Extractor] Could not record label issue", kind, error);
+  }
 }
 
 // --- Reprint last label ------------------------------------------------------
