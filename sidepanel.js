@@ -120,6 +120,7 @@ const els = {
   copyDebugReport: document.getElementById("copyDebugReport"),
   copyFailureLog: document.getElementById("copyFailureLog"),
   clearFailureLog: document.getElementById("clearFailureLog"),
+  flagLabel: document.getElementById("flagLabel"),
   debugReportStatus: document.getElementById("debugReportStatus"),
   printSettings: document.getElementById("printSettings"),
   manualCropTip: document.getElementById("manualCropTip"),
@@ -175,6 +176,7 @@ function bindEvents() {
   els.copyDebugReport?.addEventListener("click", copyDebugReport);
   els.copyFailureLog?.addEventListener("click", copyFailureLog);
   els.clearFailureLog?.addEventListener("click", clearFailureLog);
+  els.flagLabel?.addEventListener("click", flagCurrentLabel);
   els.popoutButton?.addEventListener("click", openPopoutWindow);
   els.resetLayoutButton?.addEventListener("click", resetSavedPopoutLayout);
   els.pickFile.addEventListener("click", () => els.fileInput.click());
@@ -357,6 +359,22 @@ async function copyFailureLog() {
   } catch (error) {
     setStatus(`Could not copy bad-label log: ${error.message}`, "error");
   }
+}
+
+// Owner-only: explicitly record the label currently on screen into the weekly log,
+// even if it detected cleanly (the auto-capture only fires on corrections/fallbacks,
+// so a confident-but-wrong crop would otherwise never be captured). Lab-mode only.
+async function flagCurrentLabel() {
+  const list = state.results || [];
+  const label = list[state.selectedLabelIndex] || list[0];
+  if (!label) {
+    if (els.debugReportStatus) els.debugReportStatus.textContent = "No label on screen to flag.";
+    setStatus("No label on screen to flag.");
+    return;
+  }
+  await logLabelIssue("flagged", label, state.file?.name || "");
+  if (els.debugReportStatus) els.debugReportStatus.textContent = "Label flagged for the weekly report.";
+  setStatus("Label flagged for the weekly report.");
 }
 
 // Reset the weekly window after a pull so next week starts clean. Lab-mode only.
@@ -1407,7 +1425,7 @@ async function logLabelIssue(kind, label, fileName) {
     const height = Number(label?.height || 0);
     const entry = {
       at: new Date().toISOString(),
-      kind,                                         // fallback | no-candidates | manual-crop | expand
+      kind,                                         // fallback | no-candidates | manual-crop | expand | flagged
       sender: sender?.email || sender?.name || "",
       carrier: label?.carrier || "",
       validated: Boolean(label?.carrierValidated),
