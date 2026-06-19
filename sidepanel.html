@@ -107,10 +107,11 @@
         <h2>Lab tools</h2>
         <button id="flagLabel" type="button">Flag this label</button>
         <button id="copyDebugReport" type="button">Copy debug report</button>
-        <button id="copyFailureLog" type="button">Copy failure log</button>
+        <button id="copyFailureLog" type="button">Copy safe summary</button>
+        <button id="copyPrivateFailureLog" type="button">Copy private locator log</button>
         <button id="clearFailureLog" type="button">Clear log</button>
       </header>
-      <p id="debugReportStatus">Debug report includes file, pages, candidates, confidence, fallback state, and print mode. Failure log captures bad/uncertain crops and manual corrections for the weekly pull.</p>
+      <p id="debugReportStatus">Safe summary excludes sender and filename. The private locator log includes both and should stay local. Logs expire after 30 days.</p>
     </section>
 
     <section class="file-row">
@@ -188,6 +189,7 @@
   <script src="app/downloads.js"></script>
   <script src="app/crop.js"></script>
   <script src="app/detect.js"></script>
+  <script src="app/label-feedback.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

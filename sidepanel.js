@@ -90,6 +90,14 @@ const RECENT_DRAGGED_LABEL_KEY = "recentDraggedLabel";
 const RECENT_DRAGGED_LABEL_MAX_AGE_MS = 2 * 60 * 1000;
 const LAST_PRINTED_LABEL_KEY = "lastPrintedLabel";
 const REPRINT_MAX_AGE_MS = 10 * 60 * 1000;
+const LabelFeedback = window.LabelExtractorFeedback;
+let labelLogWriteErrorCount = 0;
+const failureLogStore = LabelFeedback.createFailureLogStore({
+  storage: chrome.storage?.local,
+  getSenderInfo: () => getStoredSenderInfo(),
+  createEventId: () => globalThis.crypto?.randomUUID?.()
+    || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+});
 
 const els = {
   statusText: document.getElementById("statusText"),
@@ -119,6 +127,7 @@ const els = {
   labPanel: document.getElementById("labPanel"),
   copyDebugReport: document.getElementById("copyDebugReport"),
   copyFailureLog: document.getElementById("copyFailureLog"),
+  copyPrivateFailureLog: document.getElementById("copyPrivateFailureLog"),
   clearFailureLog: document.getElementById("clearFailureLog"),
   flagLabel: document.getElementById("flagLabel"),
   debugReportStatus: document.getElementById("debugReportStatus"),
@@ -175,6 +184,7 @@ function bindEvents() {
   els.reprintButton?.addEventListener("click", reprintLastLabel);
   els.copyDebugReport?.addEventListener("click", copyDebugReport);
   els.copyFailureLog?.addEventListener("click", copyFailureLog);
+  els.copyPrivateFailureLog?.addEventListener("click", copyPrivateFailureLog);
   els.clearFailureLog?.addEventListener("click", clearFailureLog);
   els.flagLabel?.addEventListener("click", flagCurrentLabel);
   els.popoutButton?.addEventListener("click", openPopoutWindow);
@@ -333,35 +343,74 @@ async function copyDebugReport() {
   }
 }
 
-// Owner weekly pull: copies the bad-label telemetry as CSV (paste into a
-// spreadsheet) so you can see which senders/carriers/detectors most often produce
-// bad or uncertain crops, then locate those source files to report. Lab-mode only.
-async function copyFailureLog() {
+async function loadFailureLog() {
+  return failureLogStore.read();
+}
+
+function noteLabelLogFailure(action, error, showToOwner = false) {
+  labelLogWriteErrorCount += 1;
+  console.warn(`[Label Extractor] Could not ${action}`, error);
+  if (showToOwner || state.uiMode === "lab") {
+    const message = `Bad-label log error (${labelLogWriteErrorCount}): could not ${action}.`;
+    if (els.debugReportStatus) els.debugReportStatus.textContent = message;
+    setStatus(message, "error");
+  }
+}
+
+async function copyTextWithFallback(text) {
   try {
-    const data = await chrome.storage?.local?.get("labelFailureLog");
-    const log = Array.isArray(data?.labelFailureLog) ? data.labelFailureLog : [];
+    if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable.");
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch (clipboardError) {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.append(textarea);
+    textarea.select();
+    const copied = document.execCommand?.("copy");
+    textarea.remove();
+    if (!copied) throw clipboardError;
+  }
+}
+
+// Lab-only weekly pull. The default summary deliberately excludes sender and
+// filename so it is safe to share for diagnosis.
+async function copyFailureLog() {
+  return copyFailureLogCsv(false);
+}
+
+async function copyPrivateFailureLog() {
+  const approved = window.confirm(
+    "Private locator log includes customer sender details and original filenames. Keep it local and do not paste it into chat. Copy it now?"
+  );
+  if (!approved) return;
+  return copyFailureLogCsv(true);
+}
+
+async function copyFailureLogCsv(includePrivate) {
+  try {
+    const log = await loadFailureLog();
     if (!log.length) {
       if (els.debugReportStatus) els.debugReportStatus.textContent = "No bad labels logged yet.";
       setStatus("No bad labels logged yet.");
       return;
     }
-    const cell = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const csv = ["timestamp,kind,sender,carrier,validated,reason,confidence,size,aspect,page,file"]
-      .concat(log.map((e) =>
-        [e.at, e.kind, e.sender, e.carrier, e.validated, e.reason, e.confidence, e.size, e.aspect, e.page, e.fileName]
-          .map(cell).join(",")))
-      .join("\n");
-    await navigator.clipboard.writeText(csv);
-    const oldest = String(log[0]?.at || "").slice(0, 10);
-    const msg = `Bad-label log copied (${log.length} entries since ${oldest}). Use "Clear log" after reporting.`;
+    const csv = LabelFeedback.formatFailureLogCsv(log, { includePrivate });
+    await copyTextWithFallback(csv);
+    const oldest = LabelFeedback.oldestFailureDate(log);
+    const exportName = includePrivate ? "Private locator log" : "Privacy-safe summary";
+    const msg = `${exportName} copied (${log.length} entries since ${oldest}).`;
     if (els.debugReportStatus) els.debugReportStatus.textContent = msg;
-    setStatus(`Bad-label log copied (${log.length} entries).`);
+    setStatus(`${exportName} copied (${log.length} entries).`);
   } catch (error) {
-    setStatus(`Could not copy bad-label log: ${error.message}`, "error");
+    noteLabelLogFailure("copy the bad-label log", error, true);
   }
 }
 
-// Owner-only: explicitly record the label currently on screen into the weekly log,
+// Lab-only: explicitly record the label currently on screen into the weekly log,
 // even if it detected cleanly (the auto-capture only fires on corrections/fallbacks,
 // so a confident-but-wrong crop would otherwise never be captured). Lab-mode only.
 async function flagCurrentLabel() {
@@ -372,21 +421,30 @@ async function flagCurrentLabel() {
     setStatus("No label on screen to flag.");
     return;
   }
-  await logLabelIssue("flagged", label, state.file?.name || "");
-  if (els.debugReportStatus) els.debugReportStatus.textContent = "Label flagged for the weekly report.";
-  setStatus("Label flagged for the weekly report.");
+  const result = await logLabelIssue("flagged", label, state.file?.name || "");
+  if (!result.ok) {
+    if (els.debugReportStatus) els.debugReportStatus.textContent = `Could not flag label: ${result.error.message}`;
+    setStatus(`Could not flag label: ${result.error.message}`, "error");
+    return;
+  }
+  const message = result.duplicate
+    ? "This label was already flagged recently."
+    : "Label flagged for the weekly report.";
+  if (els.debugReportStatus) els.debugReportStatus.textContent = message;
+  setStatus(message);
 }
 
-// Reset the weekly window after a pull so next week starts clean. Lab-mode only.
+// Clearing is destructive, so require an explicit confirmation and serialize it
+// behind any in-flight writes.
 async function clearFailureLog() {
+  const approved = window.confirm("Clear the entire bad-label log? Copy a summary first if you still need it.");
+  if (!approved) return;
   try {
-    const data = await chrome.storage?.local?.get("labelFailureLog");
-    const count = Array.isArray(data?.labelFailureLog) ? data.labelFailureLog.length : 0;
-    await chrome.storage?.local?.set({ labelFailureLog: [] });
+    const { count } = await failureLogStore.clear();
     if (els.debugReportStatus) els.debugReportStatus.textContent = `Bad-label log cleared (${count} removed).`;
     setStatus(`Bad-label log cleared (${count} removed).`);
   } catch (error) {
-    setStatus(`Could not clear bad-label log: ${error.message}`, "error");
+    noteLabelLogFailure("clear the bad-label log", error, true);
   }
 }
 
@@ -1023,19 +1081,20 @@ function renderResults(payload) {
     const rotateButton = makeRotateButton(index, actionHints);
     const cropButton = makeCropButton(index, actionHints);
     const expandButton = makeExpandButton(index, label);
-    const printButton = makePrintButton(index, actionHints);
+    const printButton = makePrintButton(index, label, actionHints);
     actions.append(rotateButton, cropButton, printButton, expandButton);
 
     if (preview.tagName === "IMG") {
       preview.addEventListener("load", () => {
-        const imageHints = getLabelActionHints({
+        const imageLabel = {
           ...label,
           width: preview.naturalWidth,
           height: preview.naturalHeight
-        });
+        };
+        const imageHints = getLabelActionHints(imageLabel);
         decorateActionButton(rotateButton, "rotate", imageHints.rotate);
         decorateActionButton(cropButton, "crop", imageHints.crop);
-        decorateActionButton(printButton, "print", imageHints.printReady);
+        decorateActionButton(printButton, "print", isTrustedLabel(imageLabel, imageHints));
       }, { once: true });
     }
 
@@ -1147,7 +1206,8 @@ function resultDisplayName(label, index) {
   if (state.uiMode === "lab") return label.variantName || `Candidate ${index + 1}`;
   if (isFallbackLabel(label) && label.variantName) return label.variantName;
   const hints = getLabelActionHints(label);
-  if (hints.printReady) return "Label ready";
+  if (isTrustedLabel(label, hints)) return "Label ready";
+  if (hints.printReady) return "Check label";
   if (hints.rotate) return "Rotate label";
   if (hints.crop) return "Crop label";
   return "Review label";
@@ -1196,13 +1256,15 @@ function getLabelActionState(label) {
     // A geometrically-fine but uncertain crop (e.g. 0.86-0.899, no validated
     // barcode) gets "Double-check" so staff verify the preview instead of
     // trusting a confident-looking guess. No detection change — display only.
-    const sure = Boolean(label.carrierValidated)
-      || Number(label.confidence || 0) >= TRUSTED_LOCAL_CONFIDENCE;
-    return sure
+    return isTrustedLabel(label, hints)
       ? { label: "Ready", className: "conf-high" }
       : { label: "Double-check", className: "conf-mid" };
   }
   return { label: "Review", className: "conf-mid" };
+}
+
+function isTrustedLabel(label, hints = getLabelActionHints(label)) {
+  return LabelFeedback.isTrustedLabel(label, hints, TRUSTED_LOCAL_CONFIDENCE);
 }
 
 function decorateActionButton(button, action, shouldGlow) {
@@ -1233,11 +1295,11 @@ function makeCropButton(index, actionHints) {
   return button;
 }
 
-function makePrintButton(index, actionHints) {
+function makePrintButton(index, label, actionHints) {
   const button = document.createElement("button");
   button.type = "button";
   button.textContent = "Print";
-  decorateActionButton(button, "print", actionHints.printReady);
+  decorateActionButton(button, "print", isTrustedLabel(label, actionHints));
   button.addEventListener("click", () => printLabelAtIndex(index));
   return button;
 }
@@ -1300,7 +1362,7 @@ async function expandToSourcePage(index) {
     return;
   }
 
-  // Owner-only telemetry: staff expanding to the source page means the auto-crop
+  // Lab-only telemetry: staff expanding to the source page means the auto-crop
   // wasn't usable. Log the rejected auto-result so it surfaces in the weekly pull.
   logLabelIssue("expand", label, state.file?.name || "");
 
@@ -1411,39 +1473,19 @@ function scheduleModelWarmup(delayMs = 2500) {
   }, delayMs);
 }
 
-// Quietly record bad/uncertain labels so the owner can weekly pull them (lab mode
-// > Copy failure log) and report them for a dedicated detection rule. Captures
+// Quietly record bad/uncertain labels so the owner can pull a privacy-safe Lab
+// summary and report patterns for a dedicated detection rule. Captures
 // detection fallbacks/no-candidates AND manual corrections (the strongest "the
 // auto-crop was wrong" signal: staff re-cropped or expanded the chosen result).
 // Owner-only — never surfaced to counter staff. Local storage; never committed.
-const LABEL_LOG_MAX = 1500; // ~a busy counter week before the oldest entries roll off
 async function logLabelIssue(kind, label, fileName) {
-  if (!chrome.storage?.local) return;
   try {
-    const sender = await getStoredSenderInfo();
-    const width = Number(label?.width || 0);
-    const height = Number(label?.height || 0);
-    const entry = {
-      at: new Date().toISOString(),
-      kind,                                         // fallback | no-candidates | manual-crop | expand | flagged
-      sender: sender?.email || sender?.name || "",
-      carrier: label?.carrier || "",
-      validated: Boolean(label?.carrierValidated),
-      reason: label ? (label.localReason || "unknown") : "no-candidates",
-      confidence: label ? Number(label.confidence || 0) : 0,
-      size: width && height ? `${width}x${height}` : "",
-      aspect: width && height ? Number((width / height).toFixed(3)) : 0,
-      page: label?.pageCount ? `${label.sourcePage || 1}/${label.pageCount}` : String(label?.sourcePage || ""),
-      fileName: fileName || ""
-    };
-    const data = await chrome.storage.local.get("labelFailureLog");
-    const log = Array.isArray(data.labelFailureLog) ? data.labelFailureLog : [];
-    log.push(entry);
-    await chrome.storage.local.set({ labelFailureLog: log.slice(-LABEL_LOG_MAX) });
+    return await failureLogStore.record(kind, label, fileName);
   } catch (error) {
     // Surface instead of swallowing — a silent failure here is why a "didn't
     // record" issue is hard to diagnose. Lab owners can see it in the console.
-    console.warn("[Label Extractor] Could not record label issue", kind, error);
+    noteLabelLogFailure(`record ${kind || "unknown"} label issue`, error);
+    return { ok: false, recorded: false, error };
   }
 }
 

@@ -1169,9 +1169,19 @@ h2 {
 
 .lab-panel header {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 10px;
   align-items: center;
+}
+
+.lab-panel header h2 {
+  flex: 1 0 100%;
+  margin-bottom: 0;
+}
+
+.lab-panel header button {
+  flex: 1 1 180px;
 }
 
 .lab-panel p {
