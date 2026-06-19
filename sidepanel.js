@@ -35,6 +35,11 @@ const state = {
   cachedPagesKey: "",
   modelWarmupStarted: false,
   activeDownloadId: null,
+  grabAttempt: null,
+  grabAttemptSequence: 0,
+  grabArrivalTimer: null,
+  grabCompletionTimer: null,
+  grabExpiryTimer: null,
   clearMode: "idle",
   uiMode: "staff",
   lastExtractionSummary: null,
@@ -94,6 +99,7 @@ const LAST_PRINTED_LABEL_KEY = "lastPrintedLabel";
 const REPRINT_MAX_AGE_MS = 10 * 60 * 1000;
 const LabelFeedback = window.LabelExtractorFeedback;
 const RuntimeHealth = window.LabelExtractorRuntimeHealth;
+const GrabRecovery = window.LabelExtractorGrabRecovery;
 let labelLogWriteErrorCount = 0;
 const failureLogStore = LabelFeedback.createFailureLogStore({
   storage: chrome.storage?.local,
@@ -118,6 +124,7 @@ const els = {
   downloadsList: document.getElementById("downloadsList"),
   downloadPreview: document.getElementById("downloadPreview"),
   recentDownloads: document.querySelector(".recent-downloads"),
+  grabRecoveryMessage: document.getElementById("grabRecoveryMessage"),
   fileName: document.getElementById("fileName"),
   clearButton: document.getElementById("clearButton"),
   clearReminder: document.getElementById("clearReminder"),
@@ -537,20 +544,170 @@ async function grabOutlookAttachment() {
   setStatus("Looking for a label attachment in Outlook...", "loading");
 
   try {
+    await beginGrabAttempt();
     const response = await chrome.runtime.sendMessage({ type: "grab-outlook-label-attachment" });
     if (!response?.ok) throw new Error(response?.message || "No Outlook label attachment found.");
 
+    state.grabAttempt = GrabRecovery.acceptAttempt(state.grabAttempt, {
+      now: Date.now(),
+      expectedFileName: response.fileName || ""
+    });
     const method = outlookGrabMethodName(response.method);
     setStatus(response.fileName
-      ? `Started Outlook download from ${method}: ${response.fileName}`
-      : `Started Outlook download from ${method}.`, "loading");
+      ? `Download started from ${method}: ${response.fileName}. Waiting for Chrome...`
+      : `Download started from ${method}. Waiting for Chrome...`, "loading");
+    armGrabArrivalTimer(state.grabAttempt?.id);
     scheduleFastDownloadChecks();
   } catch (error) {
-    setStatus(`Outlook grab failed: ${error.message}`, "error");
-    showBanner(`Outlook grab failed: ${error.message}`, "error", 7000);
+    if (state.grabAttempt) state.grabAttempt = GrabRecovery.failAttempt(state.grabAttempt, error.message);
+    showGrabRecovery(
+      "Use Outlook's Download button, then select Refresh or Use below.",
+      error.message
+    );
   } finally {
     if (button) button.disabled = false;
   }
+}
+
+async function beginGrabAttempt() {
+  clearGrabAttemptTimers();
+  clearGrabRecoveryGuide();
+  const baselineIds = await snapshotSupportedDownloadIds();
+  state.grabAttempt = GrabRecovery.beginAttempt({
+    id: ++state.grabAttemptSequence,
+    now: Date.now(),
+    baselineIds
+  });
+  armGrabExpiryTimer(state.grabAttempt.id);
+}
+
+function armGrabArrivalTimer(attemptId) {
+  clearTimeout(state.grabArrivalTimer);
+  if (!attemptId) return;
+  state.grabArrivalTimer = setTimeout(() => {
+    applyGrabTimeout(attemptId);
+  }, GrabRecovery.ARRIVAL_TIMEOUT_MS + 50);
+}
+
+function armGrabCompletionTimer(attemptId) {
+  clearTimeout(state.grabCompletionTimer);
+  if (!attemptId) return;
+  state.grabCompletionTimer = setTimeout(() => {
+    applyGrabTimeout(attemptId);
+  }, GrabRecovery.COMPLETION_TIMEOUT_MS + 50);
+}
+
+function armGrabExpiryTimer(attemptId) {
+  clearTimeout(state.grabExpiryTimer);
+  if (!attemptId) return;
+  state.grabExpiryTimer = setTimeout(() => {
+    if (state.grabAttempt?.id === attemptId) state.grabAttempt = null;
+    clearGrabAttemptTimers();
+  }, GrabRecovery.MAX_ATTEMPT_AGE_MS + 100);
+}
+
+function applyGrabTimeout(attemptId) {
+  if (!state.grabAttempt || state.grabAttempt.id !== attemptId) return;
+  const next = GrabRecovery.checkTimeout(state.grabAttempt, Date.now());
+  state.grabAttempt = next;
+  if (next?.reason === "no-download") {
+    showGrabRecovery(
+      "Nothing downloaded yet. Use Outlook's Download button, then select Refresh or Use below.",
+      "Outlook accepted the request, but Chrome did not receive a label file."
+    );
+  } else if (next?.reason === "download-slow") {
+    showGrabRecovery(
+      "The download is taking longer than expected. Check Chrome Downloads, then select Refresh here.",
+      "The label download started but has not finished."
+    );
+  }
+}
+
+function handleGrabDownloadCreated(download) {
+  if (!state.grabAttempt) return;
+  const prior = state.grabAttempt;
+  const next = GrabRecovery.noteDownloadCreated(prior, download, Date.now());
+  if (next === prior) return;
+  state.grabAttempt = next;
+  clearTimeout(state.grabArrivalTimer);
+  state.grabArrivalTimer = null;
+  if (next.status === "complete") {
+    finishGrabAttempt(download);
+    return;
+  }
+  clearGrabRecoveryGuide();
+  setStatus("Chrome is downloading the label — waiting for it to finish...", "loading");
+  armGrabCompletionTimer(next.id);
+}
+
+function handleGrabDownloadChanged(delta) {
+  if (!state.grabAttempt) return;
+  const prior = state.grabAttempt;
+  const next = GrabRecovery.noteDownloadChanged(prior, delta, Date.now());
+  if (next === prior) return;
+  state.grabAttempt = next;
+  if (next.status === "complete") {
+    finishGrabAttempt({ id: next.downloadId });
+  } else if (next.reason === "download-interrupted") {
+    clearTimeout(state.grabCompletionTimer);
+    state.grabCompletionTimer = null;
+    showGrabRecovery(
+      "The Chrome download stopped. Use Outlook's Download button again, then select Refresh.",
+      next.detail
+    );
+  }
+}
+
+function reconcileGrabCompletedDownloads(downloads) {
+  if (!state.grabAttempt) return;
+  const prior = state.grabAttempt;
+  const next = GrabRecovery.reconcileCompletedDownloads(prior, downloads, Date.now());
+  if (next === prior || next?.status !== "complete") return;
+  state.grabAttempt = next;
+  const match = downloads.find((download) => Number(download.id) === Number(next.downloadId));
+  finishGrabAttempt(match || { id: next.downloadId });
+}
+
+function finishGrabAttempt(download) {
+  clearGrabAttemptTimers();
+  clearGrabRecoveryGuide();
+  const name = download?.filename ? basename(download.filename) : "Label file";
+  setStatus(`${name} is ready — select Use below.`);
+  state.grabAttempt = null;
+}
+
+function showGrabRecovery(message, detail = "") {
+  clearTimeout(state.grabArrivalTimer);
+  clearTimeout(state.grabCompletionTimer);
+  state.grabArrivalTimer = null;
+  state.grabCompletionTimer = null;
+  if (els.grabRecoveryMessage) {
+    els.grabRecoveryMessage.textContent = message;
+    els.grabRecoveryMessage.hidden = false;
+  }
+  els.recentDownloads?.classList.add("grab-recovery-attention");
+  setStatus(detail ? `Download Label needs help: ${detail}` : "Download Label needs help.", "error");
+  requestAnimationFrame(() => {
+    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    els.recentDownloads?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
+  });
+}
+
+function clearGrabRecoveryGuide() {
+  if (els.grabRecoveryMessage) {
+    els.grabRecoveryMessage.hidden = true;
+    els.grabRecoveryMessage.textContent = "";
+  }
+  els.recentDownloads?.classList.remove("grab-recovery-attention");
+}
+
+function clearGrabAttemptTimers() {
+  clearTimeout(state.grabArrivalTimer);
+  clearTimeout(state.grabCompletionTimer);
+  clearTimeout(state.grabExpiryTimer);
+  state.grabArrivalTimer = null;
+  state.grabCompletionTimer = null;
+  state.grabExpiryTimer = null;
 }
 
 function outlookGrabMethodName(method) {
@@ -561,8 +718,8 @@ function outlookGrabMethodName(method) {
 }
 
 function scheduleFastDownloadChecks() {
-  [350, 900, 1600].forEach((ms) => {
-    setTimeout(() => loadRecentDownloads({ manual: true }), ms);
+  [350, 900, 1600, 3200, 5600].forEach((ms) => {
+    setTimeout(() => loadRecentDownloads(), ms);
   });
 }
 

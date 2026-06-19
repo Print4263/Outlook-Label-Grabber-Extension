@@ -29,6 +29,7 @@ async function loadRecentDownloads(options = {}) {
       .filter(isSupportedDownload)
       .filter(isAfterDownloadsClearedAt);
     renderRecentDownloads(labelDownloads.slice(0, 1), senderInfo);
+    reconcileGrabCompletedDownloads(labelDownloads);
     maybeAutoCleanDownloads(labelDownloads);
   } catch (error) {
     renderDownloadsMessage(`Could not read downloads: ${error.message}`);
@@ -53,12 +54,15 @@ function startDownloadsPolling() {
 
   if (chrome.downloads?.onCreated) {
     chrome.downloads.onCreated.addListener((download) => {
-      if (isSupportedDownload(download)) setTimeout(loadRecentDownloads, 300);
+      if (!isSupportedDownload(download)) return;
+      handleGrabDownloadCreated(download);
+      setTimeout(loadRecentDownloads, 300);
     });
   }
 
   if (chrome.downloads?.onChanged) {
     chrome.downloads.onChanged.addListener((delta) => {
+      handleGrabDownloadChanged(delta);
       if (delta.state?.current !== "complete") return;
       chrome.downloads.search({ id: delta.id }, (items) => {
         // The file is on disk once state is "complete" — only a short settle
@@ -66,6 +70,19 @@ function startDownloadsPolling() {
         if (isSupportedDownload(items?.[0])) setTimeout(loadRecentDownloads, 150);
       });
     });
+  }
+}
+
+async function snapshotSupportedDownloadIds() {
+  if (!chrome.downloads?.search) return [];
+  try {
+    const downloads = await chrome.downloads.search({
+      limit: RECENT_DOWNLOAD_LIMIT,
+      orderBy: ["-startTime"]
+    });
+    return downloads.filter(isSupportedDownload).map((download) => Number(download.id));
+  } catch (_) {
+    return [];
   }
 }
 
