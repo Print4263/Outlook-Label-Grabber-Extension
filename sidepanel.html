@@ -13,7 +13,7 @@
     <header class="topbar">
       <div>
         <h1><span class="title-kicker">Domain Expansion</span><span class="title-sep">:</span><span class="title-kicker"> Print Label</span></h1>
-        <p id="statusText">Ready.</p>
+        <p id="statusText" aria-live="polite">Ready — open an Outlook email or choose a file.</p>
       </div>
       <div class="topbar-actions">
         <button id="reprintButton" type="button" hidden title="Print the last label again">Reprint last</button>
@@ -21,7 +21,7 @@
       </div>
     </header>
 
-    <div id="alertBanner" class="alert-banner" hidden></div>
+    <div id="alertBanner" class="alert-banner" role="status" aria-live="polite" hidden></div>
     <div id="dropOverlay" class="drop-overlay" hidden>
       <div class="drop-overlay-panel">
         <strong>Drop label to extract</strong>
@@ -31,7 +31,7 @@
 
     <section class="download-label-panel">
       <button id="grabOutlookAttachment" type="button">Download Label</button>
-      <p><span>Open Outlook Email then hit Download Label.</span><span>Download button in Outlook works as backup.</span></p>
+      <p><span>Open the Outlook email, then select Download Label.</span><span>If nothing loads, use Outlook's Download button, then Recent downloads.</span></p>
     </section>
 
     <section class="recent-downloads">
@@ -96,9 +96,9 @@
     </section>
 
     <div class="manual-crop-tip" id="manualCropTip">
-      <p><strong>Download not working?</strong> Drag the label into Extractor.</p>
-      <p><strong>No label yet?</strong> Scroll down. It may be lower.</p>
-      <p><strong>Label being difficult?</strong> Hit Expand or Crop, draw a wide box around just the label, and let the extractor do the rest.</p>
+      <p><strong>Download not working?</strong> Use Outlook's Download button, then select the file under Recent downloads.</p>
+      <p><strong>No result yet?</strong> Scroll down — the label may be lower.</p>
+      <p><strong>Crop wrong?</strong> Select Expand or Crop, then box only the label.</p>
     </div>
     <section id="results" class="results"></section>
 
@@ -191,6 +191,7 @@
   <script src="app/crop.js"></script>
   <script src="app/detect.js"></script>
   <script src="app/label-feedback.js"></script>
+  <script src="app/runtime-health.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

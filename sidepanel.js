@@ -38,6 +38,7 @@ const state = {
   clearMode: "idle",
   uiMode: "staff",
   lastExtractionSummary: null,
+  runtimeHealth: null,
   reprintHideTimer: null
 };
 
@@ -92,6 +93,7 @@ const RECENT_DRAGGED_LABEL_MAX_AGE_MS = 2 * 60 * 1000;
 const LAST_PRINTED_LABEL_KEY = "lastPrintedLabel";
 const REPRINT_MAX_AGE_MS = 10 * 60 * 1000;
 const LabelFeedback = window.LabelExtractorFeedback;
+const RuntimeHealth = window.LabelExtractorRuntimeHealth;
 let labelLogWriteErrorCount = 0;
 const failureLogStore = LabelFeedback.createFailureLogStore({
   storage: chrome.storage?.local,
@@ -170,7 +172,8 @@ async function init() {
   applyUiMode();
 
   bindEvents();
-  setStatus("Ready.");
+  setStatus("Ready — open an Outlook email or choose a file.");
+  void runRuntimeSelfCheck();
   loadRecentDownloads();
   startDownloadsPolling();
   refreshReprintButton();
@@ -488,6 +491,7 @@ function buildDebugReport() {
     } : null,
     activeDownloadId: state.activeDownloadId,
     extraction: state.lastExtractionSummary,
+    runtimeHealth: state.runtimeHealth,
     cachedPages,
     results
   }, null, 2);
@@ -683,9 +687,64 @@ function showBanner(message, type = "info", duration = 4000) {
   els.alertBanner.className = `alert-banner ${type}`;
   els.alertBanner.hidden = false;
   clearTimeout(els.alertBanner._dismissTimer);
-  els.alertBanner._dismissTimer = setTimeout(() => {
-    els.alertBanner.hidden = true;
-  }, duration);
+  els.alertBanner._dismissTimer = null;
+  if (duration > 0) {
+    els.alertBanner._dismissTimer = setTimeout(() => {
+      els.alertBanner.hidden = true;
+      if (state.runtimeHealth?.ok === false && state.runtimeHealth.message) {
+        showBanner(state.runtimeHealth.message, "warning", 0);
+      }
+    }, duration);
+  }
+}
+
+async function runRuntimeSelfCheck() {
+  if (!RuntimeHealth?.checkRuntimeHealth) return;
+  try {
+    const health = await RuntimeHealth.checkRuntimeHealth({
+      checkFileAccess: checkFileUrlAccess,
+      probeAsset: probePackagedAsset
+    });
+    state.runtimeHealth = health;
+    if (!health.ok && health.message) showBanner(health.message, "warning", 0);
+  } catch (error) {
+    state.runtimeHealth = { ok: false, checkFailed: true };
+    console.warn("[Label Extractor] Startup dependency check failed.", error);
+    showBanner("Startup check could not finish. Reload this extension.", "warning", 0);
+  }
+}
+
+function checkFileUrlAccess() {
+  const check = chrome.extension?.isAllowedFileSchemeAccess;
+  if (typeof check !== "function") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    check.call(chrome.extension, (allowed) => {
+      if (chrome.runtime?.lastError) {
+        resolve(null);
+        return;
+      }
+      resolve(Boolean(allowed));
+    });
+  });
+}
+
+async function probePackagedAsset(path) {
+  if (!chrome.runtime?.getURL) return false;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3500);
+  try {
+    const response = await fetch(chrome.runtime.getURL(path), {
+      cache: "no-store",
+      headers: { Range: "bytes=0-0" },
+      signal: controller.signal
+    });
+    try { await response.body?.cancel(); } catch (_) {}
+    return response.ok;
+  } catch (_) {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function setFile(file) {
@@ -698,7 +757,7 @@ function setFile(file) {
     return;
   }
   if (file.size > LabelExtractorConfig.MAX_UPLOAD_BYTES) {
-    setStatus("File is too large for this first version.");
+    setStatus("File is too large. Use a smaller PDF or image.");
     return;
   }
 
@@ -976,9 +1035,15 @@ async function extractSelectedFile() {
     renderResults({ labels: state.results });
     updateSheetPreview();
     const twinCount = getTwinLabelCount(candidates);
+    const topHints = candidates[0] ? getLabelActionHints(candidates[0]) : null;
+    const completionStatus = !candidates.length
+      ? "No printable label found. Try the original PDF/image or Recent downloads."
+      : isTrustedLabel(candidates[0], topHints)
+        ? "Label ready — check the preview, then print."
+        : "Check the preview before printing.";
     setStatus(twinCount > 1
-      ? `${twinCount} labels found - print each one from this screen.`
-      : candidates.length ? "Ready to print." : "No label candidates found - try another file or crop manually.");
+      ? `${twinCount} labels found — check and print each one.`
+      : completionStatus);
     if (candidates.length) resetInactivityTimer();
 
     // Telemetry: note cases where detection didn't cleanly nail the label.
@@ -1024,7 +1089,7 @@ function renderResults(payload) {
   if (!payload.labels?.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
-    empty.textContent = payload.warnings?.join(" ") || "No label candidate was returned.";
+    empty.textContent = payload.warnings?.join(" ") || "No printable label found. Try the original PDF or image.";
     els.results.append(empty);
     els.printSettings.classList.add("inactive");
     return;
@@ -1210,7 +1275,7 @@ function resultDisplayName(label, index) {
   if (isFallbackLabel(label) && label.variantName) return label.variantName;
   const hints = getLabelActionHints(label);
   if (isTrustedLabel(label, hints)) return "Label ready";
-  if (hints.printReady) return "Check label";
+  if (hints.printReady) return "Check before printing";
   if (hints.rotate) return "Rotate label";
   if (hints.crop) return "Crop label";
   return "Review label";
@@ -1257,11 +1322,11 @@ function getLabelActionState(label) {
     // "Ready" (green) only when the extension is actually sure: a check-digit
     // validated carrier barcode, or detector confidence at/above the trust floor.
     // A geometrically-fine but uncertain crop (e.g. 0.86-0.899, no validated
-    // barcode) gets "Double-check" so staff verify the preview instead of
+    // barcode) gets "Check preview" so staff verify the preview instead of
     // trusting a confident-looking guess. No detection change — display only.
     return isTrustedLabel(label, hints)
       ? { label: "Ready", className: "conf-high" }
-      : { label: "Double-check", className: "conf-mid" };
+      : { label: "Check preview", className: "conf-mid" };
   }
   return { label: "Review", className: "conf-mid" };
 }

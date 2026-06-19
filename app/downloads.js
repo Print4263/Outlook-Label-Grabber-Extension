@@ -133,7 +133,7 @@ function renderRecentDownloads(downloads, senderInfo) {
   if (!visible.length) {
     const msg = downloads.length
       ? "Last label processed — waiting for next download."
-      : "No recent label downloads found. Try Refresh after the Outlook download finishes.";
+      : "No recent label found. Finish Outlook's Download, then select Refresh.";
     renderDownloadsMessage(msg);
     state.firstPollDone = true;
     return;
@@ -311,7 +311,7 @@ async function useDownloadedFile(download, options = {}) {
     }
   } catch (error) {
     if (!options.automatic) {
-      setStatus(`Could not load download directly: ${error.message}. Enable file URL access for this extension, or click Show and drag the file from the folder.`);
+      setStatus(`Could not open the downloaded file: ${error.message}. In chrome://extensions, enable “Allow access to file URLs”, then retry. Or select Show and drag the file here.`);
     }
   }
 }
@@ -445,7 +445,7 @@ async function previewDownloadedFile(download) {
     setStatus("Preview loaded.");
   } catch (error) {
     clearDownloadPreview();
-    setStatus(`Could not preview download: ${error.message}. Enable file URL access for this extension.`);
+    setStatus(`Could not preview the download: ${error.message}. In chrome://extensions, enable “Allow access to file URLs”, then retry.`);
   }
 }
 
