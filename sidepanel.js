@@ -1259,9 +1259,19 @@ function renderResults(payload) {
     els.results.append(makeMultiLabelNotice(payload.labels, multiLabelCount));
   }
 
-  payload.labels.forEach((label, index) => {
+  const usesVariantSwitcher = multiLabelCount <= 1 && payload.labels.length > 1;
+  if (usesVariantSwitcher) {
+    state.selectedLabelIndex = clamp(state.selectedLabelIndex, 0, payload.labels.length - 1);
+    els.results.append(makeVariantSwitcher(payload.labels, state.selectedLabelIndex));
+  }
+
+  const visibleResults = usesVariantSwitcher
+    ? [{ label: payload.labels[state.selectedLabelIndex], index: state.selectedLabelIndex }]
+    : payload.labels.map((label, index) => ({ label, index }));
+
+  visibleResults.forEach(({ label, index }) => {
     const card = document.createElement("article");
-    card.className = "label-card";
+    card.className = `label-card${usesVariantSwitcher ? " variant-primary-card" : ""}`;
 
     const title = document.createElement("div");
     title.className = "card-title";
@@ -1273,6 +1283,7 @@ function renderResults(payload) {
     preview.className = "preview";
     preview.src = dataUrl;
     preview.title = `Extracted label ${index + 1}`;
+    bindPreviewZoom(preview, label, resultDisplayName(label, index));
     // Show what actually prints (white-trimmed, filled, sharpened) so staff can
     // trust the preview and skip needless Crop/Expand.
     if (preview.tagName === "IMG") {
@@ -1330,6 +1341,116 @@ function renderResults(payload) {
     if (index === state.selectedLabelIndex) card.classList.add("selected");
     els.results.append(card);
   });
+}
+
+function makeVariantSwitcher(labels, selectedIndex) {
+  const switcher = document.createElement("section");
+  switcher.className = "variant-switcher";
+  switcher.setAttribute("aria-label", "Label options");
+
+  const heading = document.createElement("div");
+  heading.className = "variant-switcher-heading";
+  const count = labels.length;
+  heading.innerHTML = `<strong>${count} label options found</strong><span>Select an option to compare it below.</span>`;
+
+  const options = document.createElement("div");
+  options.className = "variant-options";
+  options.setAttribute("role", "group");
+  options.setAttribute("aria-label", "Choose a label option");
+
+  labels.forEach((label, index) => {
+    const actionState = getLabelActionState(label);
+    const button = document.createElement("button");
+    const isSelected = index === selectedIndex;
+    button.type = "button";
+    button.className = `variant-option${isSelected ? " selected" : ""}`;
+    button.setAttribute("aria-pressed", String(isSelected));
+    button.title = index === 0 ? "Show the best detected label option" : `Show label option ${index + 1}`;
+
+    const thumb = document.createElement("img");
+    thumb.alt = "";
+    thumb.src = labelToDataUrl(label);
+
+    const copy = document.createElement("span");
+    copy.className = "variant-option-copy";
+    const name = index === 0 ? "Best match" : `Option ${index + 1}`;
+    copy.innerHTML = `<strong>${name}</strong><small>${escapeHtml(actionState.label)}</small>`;
+    button.append(thumb, copy);
+
+    button.addEventListener("click", () => {
+      if (state.selectedLabelIndex === index) return;
+      state.selectedLabelIndex = index;
+      renderResults({ labels: state.results });
+      updateSheetPreview();
+      resetInactivityTimer();
+    });
+    options.append(button);
+  });
+
+  switcher.append(heading, options);
+  return switcher;
+}
+
+function bindPreviewZoom(preview, label, title) {
+  if (preview.tagName !== "IMG") return;
+  preview.classList.add("preview-zoomable");
+  preview.tabIndex = 0;
+  preview.setAttribute("role", "button");
+  preview.setAttribute("aria-label", "Open a larger label preview");
+  preview.title = "Select to enlarge the label preview";
+  const open = () => openPreviewLightbox(label, title);
+  preview.addEventListener("click", open);
+  preview.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    open();
+  });
+}
+
+function openPreviewLightbox(label, title) {
+  const returnFocus = document.activeElement;
+  const lightbox = document.createElement("div");
+  lightbox.className = "preview-lightbox";
+  lightbox.setAttribute("role", "dialog");
+  lightbox.setAttribute("aria-modal", "true");
+  lightbox.setAttribute("aria-label", `${title} enlarged preview`);
+
+  const panel = document.createElement("div");
+  panel.className = "preview-lightbox-panel";
+  const header = document.createElement("header");
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "preview-lightbox-close";
+  close.textContent = "Close";
+
+  const image = document.createElement("img");
+  image.alt = `${title} enlarged`;
+  image.src = labelToDataUrl(label);
+  printPreviewDataUrl(label).then((url) => {
+    if (url && image.isConnected) image.src = url;
+  });
+
+  const dismiss = () => {
+    document.removeEventListener("keydown", onKeydown);
+    lightbox.remove();
+    if (returnFocus instanceof HTMLElement && returnFocus.isConnected) returnFocus.focus();
+  };
+  const onKeydown = (event) => {
+    if (event.key === "Escape") dismiss();
+  };
+  close.addEventListener("click", dismiss);
+  lightbox.addEventListener("click", (event) => {
+    if (event.target === lightbox) dismiss();
+  });
+  document.addEventListener("keydown", onKeydown);
+
+  header.append(heading, close);
+  panel.append(header, image);
+  lightbox.append(panel);
+  document.body.append(lightbox);
+  close.focus();
 }
 
 function getTwinLabelCount(labels = []) {
