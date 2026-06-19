@@ -1537,3 +1537,18 @@ h2 {
   opacity: 0.35;
   cursor: not-allowed;
 }
+
+/* 4x6 reference frame inscribed in the crop box (Phase 1 / B3). Faint dashed by
+   default; turns green when the crop box itself is essentially 4x6. */
+.crop-guide {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px dashed rgba(148, 163, 184, 0.9);
+  border-radius: 2px;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+.crop-guide.is-4x6 {
+  border-color: rgba(22, 163, 74, 0.95);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6);
+}

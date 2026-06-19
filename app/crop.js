@@ -383,6 +383,60 @@ function renderCropBox() {
   els.cropBox.style.top = `${state.cropRect.y * 100}%`;
   els.cropBox.style.width = `${state.cropRect.width * 100}%`;
   els.cropBox.style.height = `${state.cropRect.height * 100}%`;
+  renderCropGuide();
+}
+
+// Lazily-created dashed 4x6 reference frame, inscribed inside the crop box, so
+// staff can shape a hand-crop toward the thermal label aspect. Created in JS (not
+// markup) so the port stays JS/CSS only - no branding-bearing sidepanel.html edit.
+function cropGuideElement() {
+  let guide = els.cropBox.querySelector(".crop-guide");
+  if (!guide) {
+    guide = document.createElement("div");
+    guide.className = "crop-guide";
+    guide.setAttribute("aria-hidden", "true");
+    els.cropBox.append(guide);
+  }
+  return guide;
+}
+
+function renderCropGuide() {
+  const guide = cropGuideElement();
+  const imgW = els.cropImage.naturalWidth || 0;
+  const imgH = els.cropImage.naturalHeight || 0;
+  const boxW = state.cropRect.width * imgW;
+  const boxH = state.cropRect.height * imgH;
+  if (!imgW || !imgH || boxW <= 0 || boxH <= 0) {
+    guide.style.display = "none";
+    return;
+  }
+
+  // Guide toward the 4x6 orientation closest to the current box: a landscape
+  // crop auto-rotates to portrait downstream, so either is a valid target.
+  const portrait = 4 / 6;
+  const landscape = 6 / 4;
+  const boxAspect = boxW / boxH;
+  const target = boxW >= boxH ? landscape : portrait;
+
+  let guideW, guideH;
+  if (boxAspect > target) {
+    guideH = boxH;
+    guideW = boxH * target;
+  } else {
+    guideW = boxW;
+    guideH = boxW / target;
+  }
+
+  const wPct = Math.min(100, (guideW / boxW) * 100);
+  const hPct = Math.min(100, (guideH / boxH) * 100);
+  guide.style.display = "block";
+  guide.style.left = `${(100 - wPct) / 2}%`;
+  guide.style.top = `${(100 - hPct) / 2}%`;
+  guide.style.width = `${wPct}%`;
+  guide.style.height = `${hPct}%`;
+
+  // Green confirmation once the box itself is essentially 4x6 (guide fills it).
+  guide.classList.toggle("is-4x6", Math.min(wPct, hPct) >= 92);
 }
 
 function positionCropLayerToImage() {
