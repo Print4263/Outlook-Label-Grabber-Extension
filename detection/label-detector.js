@@ -21,12 +21,14 @@
     getCanvasData,
     detectDashedBorder,
     detectSolidLabelBorder,
-    findBarcodeRegions,
-    findBarcodeRegionsInGrid,
-    expandRectToClippedBarcodes,
     borderLineScore,
     contentSeparationScore
   } = window.LabelExtractorPixelAnalysis;
+  const {
+    findBarcodeRegions,
+    findBarcodeRegionsInGrid,
+    expandRectToClippedBarcodes
+  } = window.LabelExtractorBarcodePixelAnalysis.create({ getCanvasData });
   const {
     isOrderDetailsText,
     labelTextScore,

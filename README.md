@@ -60,7 +60,8 @@ The setting is saved per device only.
 | `app/crop.js` | Crop editor, auto-orient, rotate-to-portrait |
 | `app/detect.js` | Turns detector output into ranked candidates |
 | `detection/label-detector.js` | Detection cascade and candidate generation |
-| `detection/pixel-analysis.js` | Cached border and barcode pixel scans used by the detection cascade |
+| `detection/pixel-analysis.js` | Cached border and content-separation pixel scans used by the detection cascade |
+| `detection/barcode-pixel-analysis.js` | Cached barcode-grid scans and clipped-barcode crop expansion |
 | `detection/detector-ranking.js` | Candidate ordering, additive score breakdown, and 4x6 shape scoring |
 | `detection/candidate-selection.js` | Post-detection filtering and winner-promotion policy |
 | `detection/barcode-confirmation.js` | Candidate barcode confirmation, metadata enrichment, and near-tie reranking |

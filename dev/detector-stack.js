@@ -9,6 +9,7 @@
   [
     "../detection/crop-engine.js",
     "../detection/pixel-analysis.js",
+    "../detection/barcode-pixel-analysis.js",
     "../detection/carrier-utils.js",
     "../detection/page-text-cues.js",
     "../detection/model-detector.js",
