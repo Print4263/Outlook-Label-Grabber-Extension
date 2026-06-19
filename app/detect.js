@@ -122,6 +122,7 @@ function localVariantName(result) {
   const page = Number(result.pageIndex || 0) + 1;
   if (result.reason === "embedded-usps-label") return `USPS embedded label page ${page}`;
   if (result.reason === "fold-here-label") return `Label below FOLD HERE page ${page}`;
+  if (result.reason === "dashed-border") return `Dashed border label page ${page}`;
   if (result.reason === "solid-border") return `Local label page ${page}`;
   if (result.reason === "keywords") return `Carrier text label page ${page}`;
   if (result.reason === "text-label-page") return `Text label page ${page}`;
@@ -214,9 +215,10 @@ async function addMissingPageCropOptions(candidates, labels) {
 
   const limit = Math.max(4, getVariantLimit([...labels, ...candidates, ...fallbackOptions]));
   const prioritizedFallbacks = fallbackOptions.sort(compareMissingPageFallbackLabels);
-  const ordered = prioritizedFallbacks.some((label) => Number(label.sourcePage || 0) === 2)
-    ? [...prioritizedFallbacks, ...candidates]
-    : [...candidates, ...prioritizedFallbacks];
+  // A rendered-page fallback exists only so an otherwise-missing page remains
+  // manually recoverable. It must never outrank or evict a real detector result,
+  // even when that fallback is page 2 (the old shortcut put packing slips first).
+  const ordered = [...candidates, ...prioritizedFallbacks];
   return dedupeLabels(ordered).slice(0, limit);
 }
 
@@ -319,6 +321,10 @@ function fileFallbackLabelFromPage(page) {
 }
 
 function fileFallbackCarrier(page) {
+  // Order/reference numbers on packing slips can have the same bare 12/15/20
+  // digit lengths as FedEx tracking. This page is already classified as review-
+  // only, so keep its carrier neutral instead of inventing a carrier from digits.
+  if (isPackingSlipFallbackPage(page)) return page?.type === "pdf" ? "PDF" : "File";
   const carrier = guessLabelCarrier(page?.text);
   if (carrier) return carrier;
   return page?.type === "pdf" ? "PDF" : "File";
