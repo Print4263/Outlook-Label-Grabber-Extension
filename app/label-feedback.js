@@ -82,6 +82,60 @@
       .join("\n");
   }
 
+  // Lab-only owner rollup: bucket the existing log so the weekly pattern is
+  // visible at a glance and the next real fix is evidence-driven. Reads ONLY the
+  // safe fields (kind/carrier/validated/reason/at) — never sender or fileName —
+  // so the summary is structurally privacy-safe, not safe by convention.
+  function summarizeFailureLog(log) {
+    const entries = Array.isArray(log) ? log : [];
+
+    const labelOf = (value, fallback) => {
+      const text = String(value ?? "").trim();
+      return text || fallback;
+    };
+
+    const tally = (keyOf) => {
+      const counts = new Map();
+      for (const entry of entries) {
+        const key = keyOf(entry);
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+      return [...counts.entries()]
+        .map(([key, count]) => ({ key, count }))
+        .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+    };
+
+    // Carrier keeps a validated/unvalidated split so a confidently-mislabeled
+    // carrier is distinguishable from a low-confidence guess at a glance.
+    const carriers = new Map();
+    for (const entry of entries) {
+      const key = labelOf(entry?.carrier, "(none)");
+      const bucket = carriers.get(key) || { key, count: 0, validated: 0, unvalidated: 0 };
+      bucket.count += 1;
+      if (entry?.validated) bucket.validated += 1;
+      else bucket.unvalidated += 1;
+      carriers.set(key, bucket);
+    }
+    const byCarrier = [...carriers.values()]
+      .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+
+    const dates = entries
+      .map((entry) => Date.parse(entry?.at || ""))
+      .filter(Number.isFinite);
+    const toDay = (ms) => new Date(ms).toISOString().slice(0, 10);
+    const dateRange = dates.length
+      ? { from: toDay(Math.min(...dates)), to: toDay(Math.max(...dates)) }
+      : null;
+
+    return {
+      total: entries.length,
+      dateRange,
+      byKind: tally((entry) => labelOf(entry?.kind, "unknown")),
+      byCarrier,
+      byReason: tally((entry) => labelOf(entry?.reason, "unknown"))
+    };
+  }
+
   function oldestFailureDate(log) {
     const timestamps = (Array.isArray(log) ? log : [])
       .map((entry) => Date.parse(entry?.at || ""))
@@ -177,6 +231,7 @@
     isDuplicateFailure,
     createFailureEntry,
     formatFailureLogCsv,
+    summarizeFailureLog,
     oldestFailureDate,
     isTrustedLabel,
     createFailureLogStore

@@ -139,6 +139,8 @@ const els = {
   copyFailureLog: document.getElementById("copyFailureLog"),
   copyPrivateFailureLog: document.getElementById("copyPrivateFailureLog"),
   clearFailureLog: document.getElementById("clearFailureLog"),
+  toggleFailureSummary: document.getElementById("toggleFailureSummary"),
+  failureSummary: document.getElementById("failureSummary"),
   flagLabel: document.getElementById("flagLabel"),
   debugReportStatus: document.getElementById("debugReportStatus"),
   printSettings: document.getElementById("printSettings"),
@@ -197,6 +199,7 @@ function bindEvents() {
   els.copyFailureLog?.addEventListener("click", copyFailureLog);
   els.copyPrivateFailureLog?.addEventListener("click", copyPrivateFailureLog);
   els.clearFailureLog?.addEventListener("click", clearFailureLog);
+  els.toggleFailureSummary?.addEventListener("click", toggleFailureSummary);
   els.flagLabel?.addEventListener("click", flagCurrentLabel);
   els.popoutButton?.addEventListener("click", openPopoutWindow);
   els.resetLayoutButton?.addEventListener("click", resetSavedPopoutLayout);
@@ -443,6 +446,7 @@ async function flagCurrentLabel() {
     : "Label flagged for the weekly report.";
   if (els.debugReportStatus) els.debugReportStatus.textContent = message;
   setStatus(message);
+  void renderFailureSummary();
 }
 
 // Clearing is destructive, so require an explicit confirmation and serialize it
@@ -454,9 +458,53 @@ async function clearFailureLog() {
     const { count } = await failureLogStore.clear();
     if (els.debugReportStatus) els.debugReportStatus.textContent = `Bad-label log cleared (${count} removed).`;
     setStatus(`Bad-label log cleared (${count} removed).`);
+    void renderFailureSummary();
   } catch (error) {
     noteLabelLogFailure("clear the bad-label log", error, true);
   }
+}
+
+// Lab-only owner rollup. Buckets the existing log by carrier/kind/reason so the
+// weekly pattern is visible at a glance. Privacy-safe: summarizeFailureLog reads
+// only the non-private fields, so nothing here can leak sender/filename.
+async function toggleFailureSummary() {
+  if (!els.failureSummary) return;
+  const willShow = els.failureSummary.hidden;
+  els.failureSummary.hidden = !willShow;
+  if (els.toggleFailureSummary) els.toggleFailureSummary.textContent = willShow ? "Hide summary" : "Show summary";
+  if (willShow) await renderFailureSummary();
+}
+
+async function renderFailureSummary() {
+  if (!els.failureSummary || els.failureSummary.hidden) return;
+  try {
+    const summary = LabelFeedback.summarizeFailureLog(await loadFailureLog());
+    els.failureSummary.innerHTML = buildFailureSummaryHtml(summary);
+  } catch (error) {
+    els.failureSummary.innerHTML =
+      `<p class="failure-summary-empty">Could not build summary: ${escapeHtml(error.message)}</p>`;
+    noteLabelLogFailure("summarize the bad-label log", error);
+  }
+}
+
+function buildFailureSummaryHtml(summary) {
+  if (!summary.total) return `<p class="failure-summary-empty">No bad labels logged yet.</p>`;
+  const range = summary.dateRange
+    ? (summary.dateRange.from === summary.dateRange.to
+        ? summary.dateRange.from
+        : `${summary.dateRange.from} → ${summary.dateRange.to}`)
+    : "";
+  const head = `<p class="failure-summary-head">${summary.total} logged${range ? ` · ${escapeHtml(range)}` : ""}</p>`;
+  const rows = (list, extra) => list.map((row) =>
+    `<tr><td>${escapeHtml(row.key)}</td><td class="num">${row.count}</td>${extra ? extra(row) : ""}</tr>`).join("");
+  const table = (caption, head2, body) =>
+    `<table class="failure-summary-table"><caption>${caption}</caption>` +
+    `<thead><tr><th>${head2}</th><th class="num">Count</th></tr></thead><tbody>${body}</tbody></table>`;
+  const carrierTable =
+    `<table class="failure-summary-table"><caption>By carrier</caption>` +
+    `<thead><tr><th>Carrier</th><th class="num">Count</th><th class="num">Val/Unval</th></tr></thead>` +
+    `<tbody>${rows(summary.byCarrier, (row) => `<td class="num">${row.validated}/${row.unvalidated}</td>`)}</tbody></table>`;
+  return head + carrierTable + table("By kind", "Kind", rows(summary.byKind)) + table("By reason", "Reason", rows(summary.byReason));
 }
 
 function buildDebugReport() {

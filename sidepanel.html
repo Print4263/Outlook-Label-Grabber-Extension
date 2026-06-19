@@ -110,9 +110,11 @@
         <button id="copyDebugReport" type="button">Copy debug report</button>
         <button id="copyFailureLog" type="button">Copy safe summary</button>
         <button id="copyPrivateFailureLog" type="button">Copy private locator log</button>
+        <button id="toggleFailureSummary" type="button">Show summary</button>
         <button id="clearFailureLog" type="button">Clear log</button>
       </header>
       <p id="debugReportStatus">Safe summary excludes sender and filename. The private locator log includes both and should stay local. Logs expire after 30 days.</p>
+      <div id="failureSummary" class="failure-summary" hidden></div>
     </section>
 
     <section class="file-row">

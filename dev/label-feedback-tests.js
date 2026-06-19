@@ -114,6 +114,62 @@ function createStorage(initial = {}, options = {}) {
     ]), "2026-06-15");
   });
 
+  await test("summary of an empty log reports zero with no date range", () => {
+    const summary = Feedback.summarizeFailureLog([]);
+    assert.equal(summary.total, 0);
+    assert.equal(summary.dateRange, null);
+    assert.deepEqual(summary.byKind, []);
+    assert.deepEqual(summary.byCarrier, []);
+    assert.deepEqual(summary.byReason, []);
+  });
+  await test("summary tolerates a non-array log", () => {
+    assert.equal(Feedback.summarizeFailureLog(null).total, 0);
+  });
+
+  const summaryLog = [
+    { at: "2026-06-10T10:00:00.000Z", kind: "flagged", carrier: "UPS", validated: true, reason: "keywords" },
+    { at: "2026-06-12T10:00:00.000Z", kind: "fallback", carrier: "UPS", validated: false, reason: "keywords" },
+    { at: "2026-06-14T10:00:00.000Z", kind: "fallback", carrier: "FedEx", validated: false, reason: "no-barcode" },
+    { at: "2026-06-15T10:00:00.000Z", kind: "fallback", carrier: "", validated: false, reason: "" }
+  ];
+  await test("summary buckets kinds by descending count then name", () => {
+    const summary = Feedback.summarizeFailureLog(summaryLog);
+    assert.equal(summary.total, 4);
+    assert.deepEqual(summary.byKind, [
+      { key: "fallback", count: 3 },
+      { key: "flagged", count: 1 }
+    ]);
+  });
+  await test("summary splits carrier counts into validated/unvalidated", () => {
+    const summary = Feedback.summarizeFailureLog(summaryLog);
+    assert.deepEqual(summary.byCarrier, [
+      { key: "UPS", count: 2, validated: 1, unvalidated: 1 },
+      { key: "(none)", count: 1, validated: 0, unvalidated: 1 },
+      { key: "FedEx", count: 1, validated: 0, unvalidated: 1 }
+    ]);
+  });
+  await test("summary labels missing reason as unknown", () => {
+    const summary = Feedback.summarizeFailureLog(summaryLog);
+    assert.deepEqual(summary.byReason, [
+      { key: "keywords", count: 2 },
+      { key: "no-barcode", count: 1 },
+      { key: "unknown", count: 1 }
+    ]);
+  });
+  await test("summary date range spans oldest to newest entry", () => {
+    const summary = Feedback.summarizeFailureLog(summaryLog);
+    assert.deepEqual(summary.dateRange, { from: "2026-06-10", to: "2026-06-15" });
+  });
+  await test("summary never carries sender or filename into the rollup", () => {
+    const summary = Feedback.summarizeFailureLog([
+      { at: "2026-06-14T10:00:00.000Z", kind: "flagged", carrier: "UPS", reason: "keywords",
+        sender: "private@example.com", fileName: "customer-secret.pdf" }
+    ]);
+    const serialized = JSON.stringify(summary);
+    assert.equal(serialized.includes("private@example.com"), false);
+    assert.equal(serialized.includes("customer-secret.pdf"), false);
+  });
+
   await test("serialized concurrent writes preserve both events", async () => {
     const storage = createStorage({}, { delayMs: 5 });
     let id = 0;

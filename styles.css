@@ -1364,6 +1364,50 @@ h2 {
   font-size: 13px;
 }
 
+.failure-summary {
+  display: grid;
+  gap: 10px;
+}
+
+.failure-summary-head {
+  color: #0f172a !important;
+  font-weight: 700;
+}
+
+.failure-summary-empty {
+  color: #64748b !important;
+}
+
+.failure-summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.failure-summary-table caption {
+  text-align: left;
+  font-weight: 700;
+  color: #334155;
+  padding-bottom: 3px;
+}
+
+.failure-summary-table th,
+.failure-summary-table td {
+  border-bottom: 1px solid rgba(181, 190, 204, 0.5);
+  padding: 4px 6px;
+  text-align: left;
+}
+
+.failure-summary-table th {
+  color: #64748b;
+  font-weight: 600;
+}
+
+.failure-summary-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .more-variants-btn {
   display: block;
   width: 100%;
