@@ -2013,8 +2013,27 @@ function uniformNibbleRect(nib, level, step) {
   if (x + w > src.width) w = src.width - x;
   if (y + h > src.height) h = src.height - y;
 
-  if (level < 0 && (w < base.width * NIBBLE_MIN_BASE_FRACTION || h < base.height * NIBBLE_MIN_BASE_FRACTION)) {
-    return null;
+  if (level < 0) {
+    const minW = base.width * NIBBLE_MIN_BASE_FRACTION;
+    const minH = base.height * NIBBLE_MIN_BASE_FRACTION;
+    if (w < minW || h < minH) {
+      // A larger step can overshoot the floor. Clamp this tap to the floor
+      // (centered) so it still reaches maximum tightness instead of being thrown
+      // away and leaving the crop looser. Only refuse once the previous,
+      // less-tight level already sat at the floor — otherwise a big step would
+      // "max out" early and stop short of where a smaller step could reach.
+      const prevW = base.width + 2 * (base.width * step * (level + 1));
+      const prevH = base.height + 2 * (base.height * step * (level + 1));
+      if (prevW < minW || prevH < minH) return null; // already snug at the floor
+      w = Math.max(w, minW);
+      h = Math.max(h, minH);
+      x = base.x + base.width / 2 - w / 2;
+      y = base.y + base.height / 2 - h / 2;
+      if (x < 0) x = 0;
+      if (y < 0) y = 0;
+      if (x + w > src.width) x = src.width - w;
+      if (y + h > src.height) y = src.height - h;
+    }
   }
   if (w < 8 || h < 8) return null;
   return roundRect(x, y, w, h);
