@@ -1716,30 +1716,33 @@ function makeCropButton(index, actionHints) {
 // Straight pixel copy only - never the content-aware crop, which would re-absorb
 // chrome on tighten or re-trim on loosen. App-layer only: nothing here touches
 // detection, ranking, candidate selection, or crop-engine.
-const NIBBLE_STEP = 0.10;             // loosen: 8% +25% per user — one tap makes a clearly visible adjustment
+const NIBBLE_STEP = 0.125;            // loosen: +25% again per user (0.10 -> 0.125) so each tap moves more
 const NIBBLE_MIN_BASE_FRACTION = 0.4; // floor for the uniform-inset tighten fallback
-const TIGHTEN_GAP_FRACTION = 0.625;   // tighten: 50% +25% per user — closes more of the label-box gap per level
-const TIGHTEN_UNIFORM_STEP = 0.0625;  // tighten fallback (no content box found): 5% +25%, tracks the main nibble tuning
+const TIGHTEN_GAP_FRACTION = 0.78;    // tighten: +25% again (0.625 -> 0.78), closes most of the label-box gap per level
+const TIGHTEN_UNIFORM_STEP = 0.078;   // tighten fallback (no content box found): +25% again (0.0625 -> 0.078)
 
 function makeNibbleControls(index, label) {
   if (label?.outputMimeType === "application/pdf") return null;
   const group = document.createElement("div");
   group.className = "nibble-controls";
 
+  // Glyphs follow staff zoom intuition: + = zoom IN (tighten/crop in), − = zoom
+  // OUT (loosen/crop out). Variable names and tooltips still describe the action,
+  // so curious staff get the full detail on hover.
   const tighten = document.createElement("button");
   tighten.type = "button";
   tighten.className = "label-action label-action-nibble";
-  tighten.textContent = "−";
-  tighten.setAttribute("aria-label", "Tighten crop");
-  tighten.title = "Tighten - crop in a little (remove an even margin all around)";
+  tighten.textContent = "+";
+  tighten.setAttribute("aria-label", "Tighten crop (zoom in)");
+  tighten.title = "Zoom in / tighten - crop in a little (remove an even margin all around)";
   tighten.addEventListener("click", () => nibbleCrop(index, -1));
 
   const loosen = document.createElement("button");
   loosen.type = "button";
   loosen.className = "label-action label-action-nibble";
-  loosen.textContent = "+";
-  loosen.setAttribute("aria-label", "Loosen crop");
-  loosen.title = "Loosen - crop out a little (add back an even margin all around)";
+  loosen.textContent = "−";
+  loosen.setAttribute("aria-label", "Loosen crop (zoom out)");
+  loosen.title = "Zoom out / loosen - crop out a little (add back an even margin all around)";
   loosen.addEventListener("click", () => nibbleCrop(index, 1));
 
   group.append(tighten, loosen);
