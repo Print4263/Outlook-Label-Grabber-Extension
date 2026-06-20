@@ -54,6 +54,9 @@
         <h2>Recent downloads</h2>
         <div class="recent-download-actions">
           <button id="clearDownloads" type="button">Clear list</button>
+          <span id="queueLauncher" class="queue-launcher">
+            <button id="activateQueueMode" type="button">Multi-Label Queue</button>
+          </span>
           <button id="refreshDownloads" type="button">Refresh</button>
         </div>
       </header>
@@ -142,14 +145,6 @@
         <button id="extractButton" type="button" disabled>Extract Label</button>
       </div>
       <p id="clearReminder" class="clear-reminder" hidden>Always clear before the next label</p>
-    </section>
-
-    <section id="queueLauncher" class="queue-launcher">
-      <div>
-        <strong>Batch printing</strong>
-        <span>Optional: collect up to 10 labels, then print once.</span>
-      </div>
-      <button id="activateQueueMode" type="button">Multi-Label Queue</button>
     </section>
 
     <details class="print-settings-disclosure" open>

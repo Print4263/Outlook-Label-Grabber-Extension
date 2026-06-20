@@ -6,7 +6,7 @@ The optional Multi-Label Queue has been ported to `main` in Extension AIO. It st
 
 ## What changed
 
-- Added a dedicated `Multi-Label Queue` launcher above the print preview.
+- Moved the inactive `Multi-Label Queue` trigger into the Recent downloads header next to `Clear list`, and removed the separate launcher panel.
 - Added queue mode UI with active-state styling, queue count, clear, print, and exit controls.
 - Added queue-ready print batching so several reviewed labels open in one print job.
 - Kept the normal single-label workflow unchanged unless queue mode is explicitly activated.

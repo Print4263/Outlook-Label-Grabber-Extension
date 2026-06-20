@@ -151,43 +151,24 @@ button:disabled {
   padding: 0;
 }
 
-.queue-mode-panel,
-.queue-launcher {
+.queue-mode-panel {
   grid-column: 1 / -1;
 }
 
 .queue-launcher {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 11px 13px;
-  border: 1px dashed #a8b3c3;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.68);
-}
-
-.queue-launcher > div {
-  display: grid;
-  gap: 2px;
-}
-
-.queue-launcher strong {
-  color: #334155;
-  font-size: 13px;
-}
-
-.queue-launcher span {
-  color: #64748b;
-  font-size: 12px;
+  flex: 0 0 auto;
 }
 
 #activateQueueMode {
-  flex: 0 0 auto;
   border-color: #8b5cf6;
   color: #5b21b6;
   background: #f5f3ff;
   font-weight: 800;
+  min-height: 36px;
+  padding: 8px 12px;
+  font-size: 13px;
 }
 
 .queue-mode-panel {
@@ -666,7 +647,10 @@ h2 {
   color: #7f1d1d;
   border-color: #fecaca;
   background: linear-gradient(180deg, #fff7f7, #fee2e2);
-  font-weight: 700;
+  min-height: 42px;
+  padding: 10px 18px;
+  font-size: 15px;
+  font-weight: 900;
 }
 
 #grabOutlookAttachment {
