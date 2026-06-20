@@ -44,7 +44,9 @@ const state = {
   uiMode: "staff",
   lastExtractionSummary: null,
   runtimeHealth: null,
-  reprintHideTimer: null
+  reprintHideTimer: null,
+  printQueue: null,
+  queueBusy: false
 };
 
 const LOCAL_DETECTOR_REASONS = new Set([
@@ -100,6 +102,8 @@ const REPRINT_MAX_AGE_MS = 10 * 60 * 1000;
 const LabelFeedback = window.LabelExtractorFeedback;
 const RuntimeHealth = window.LabelExtractorRuntimeHealth;
 const GrabRecovery = window.LabelExtractorGrabRecovery;
+const PrintQueueApi = window.LabelExtractorPrintQueue;
+state.printQueue = PrintQueueApi.createPrintQueue({ maxItems: 10 });
 let labelLogWriteErrorCount = 0;
 const failureLogStore = LabelFeedback.createFailureLogStore({
   storage: chrome.storage?.local,
@@ -155,6 +159,15 @@ const els = {
   applyCrop: document.getElementById("applyCrop"),
   resetCrop: document.getElementById("resetCrop"),
   alertBanner: document.getElementById("alertBanner"),
+  queueLauncher: document.getElementById("queueLauncher"),
+  activateQueueMode: document.getElementById("activateQueueMode"),
+  queueModePanel: document.getElementById("queueModePanel"),
+  queueCount: document.getElementById("queueCount"),
+  queueHint: document.getElementById("queueHint"),
+  queueItems: document.getElementById("queueItems"),
+  printQueue: document.getElementById("printQueue"),
+  clearQueue: document.getElementById("clearQueue"),
+  exitQueueMode: document.getElementById("exitQueueMode"),
   inactivityWarning: document.getElementById("inactivityWarning"),
   inactivityText: document.getElementById("inactivityText"),
   inactivityProgress: document.getElementById("inactivityProgress"),
@@ -179,6 +192,7 @@ async function init() {
   initUiScale();
   updateSheetPreview();
   applyUiMode();
+  applyQueueMode();
 
   bindEvents();
   setStatus("Ready — open an Outlook email or choose a file.");
@@ -194,6 +208,10 @@ async function init() {
 
 function bindEvents() {
   els.modeToggle?.addEventListener("click", toggleUiMode);
+  els.activateQueueMode?.addEventListener("click", activateQueueMode);
+  els.printQueue?.addEventListener("click", printQueuedLabels);
+  els.clearQueue?.addEventListener("click", clearPrintQueue);
+  els.exitQueueMode?.addEventListener("click", exitQueueMode);
   els.reprintButton?.addEventListener("click", reprintLastLabel);
   els.copyDebugReport?.addEventListener("click", copyDebugReport);
   els.copyFailureLog?.addEventListener("click", copyFailureLog);
@@ -343,6 +361,107 @@ function applyUiMode() {
     els.modeToggle.title = labMode ? "Hide lab tools and debug details" : "Show lab tools and debug details";
   }
   if (els.labPanel) els.labPanel.hidden = !labMode;
+}
+
+function activateQueueMode() {
+  if (state.printQueue.active) return;
+  state.printQueue.activate();
+  applyQueueMode();
+  setStatus("Queue mode active - review a label, then select Add to queue.");
+  scrollPanelToTop();
+}
+
+function exitQueueMode() {
+  if (!state.printQueue.active) return;
+  if (state.printQueue.count > 0
+    && !window.confirm(`Exit queue mode and discard ${state.printQueue.count} queued label${state.printQueue.count === 1 ? "" : "s"}?`)) {
+    return;
+  }
+  state.printQueue.exit();
+  state.queueBusy = false;
+  applyQueueMode();
+  setStatus("Queue mode off - single-label printing restored.");
+}
+
+function clearPrintQueue() {
+  if (!state.printQueue.count) return;
+  if (!window.confirm(`Clear all ${state.printQueue.count} queued label${state.printQueue.count === 1 ? "" : "s"}?`)) return;
+  state.printQueue.clear();
+  renderQueuePanel();
+  syncQueueActionButtons();
+  setStatus("Print queue cleared. Queue mode is still active.");
+}
+
+function applyQueueMode() {
+  const active = Boolean(state.printQueue?.active);
+  document.body.classList.toggle("queue-mode", active);
+  if (els.queueLauncher) els.queueLauncher.hidden = active;
+  if (els.queueModePanel) els.queueModePanel.hidden = !active;
+  renderQueuePanel();
+  if (state.results.length) {
+    renderResults({ labels: state.results });
+    updateSheetPreview();
+  }
+}
+
+function renderQueuePanel() {
+  if (!els.queueItems || !state.printQueue) return;
+  const entries = state.printQueue.entries();
+  const count = entries.length;
+  const max = state.printQueue.maxItems;
+  if (els.queueCount) {
+    els.queueCount.textContent = `${count} of ${max} label${count === 1 ? "" : "s"} queued`;
+  }
+  if (els.queueHint) {
+    els.queueHint.textContent = count >= max
+      ? "Queue full. Print the batch or remove a label to add another."
+      : "Review each label, then select Add to queue. Print Queue opens one print job for the full batch.";
+  }
+  if (els.printQueue) els.printQueue.disabled = state.queueBusy || count === 0;
+  if (els.clearQueue) els.clearQueue.disabled = state.queueBusy || count === 0;
+  if (els.exitQueueMode) els.exitQueueMode.disabled = state.queueBusy;
+  els.queueItems.replaceChildren();
+  if (!entries.length) {
+    const empty = document.createElement("p");
+    empty.className = "queue-empty";
+    empty.textContent = "Queue empty - load the first label below.";
+    els.queueItems.append(empty);
+    return;
+  }
+  entries.forEach((entry, index) => {
+    const card = document.createElement("article");
+    card.className = "queue-item";
+    const image = document.createElement("img");
+    image.src = entry.printUrl;
+    image.alt = `Queued label ${index + 1}`;
+    const copy = document.createElement("div");
+    copy.className = "queue-item-copy";
+    const name = document.createElement("strong");
+    name.textContent = `${index + 1}. ${entry.name}`;
+    name.title = entry.name;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "queue-item-remove";
+    remove.textContent = "Remove";
+    remove.disabled = state.queueBusy;
+    remove.addEventListener("click", () => {
+      state.printQueue.remove(entry.id);
+      renderQueuePanel();
+      syncQueueActionButtons();
+      setStatus(`Removed label ${index + 1} from the queue.`);
+    });
+    copy.append(name, remove);
+    card.append(image, copy);
+    els.queueItems.append(card);
+  });
+}
+
+function syncQueueActionButtons() {
+  const disabled = state.queueBusy || state.printQueue.remaining <= 0;
+  document.querySelectorAll('[data-action="queue"]').forEach((button) => {
+    button.disabled = disabled;
+    button.title = state.printQueue.remaining <= 0 ? "Queue is full." : "Add this reviewed label to the print queue.";
+  });
 }
 
 async function copyDebugReport() {
@@ -1391,7 +1510,8 @@ function renderResults(payload) {
         const imageHints = getLabelActionHints(imageLabel);
         decorateActionButton(rotateButton, "rotate", imageHints.rotate);
         decorateActionButton(cropButton, "crop", imageHints.crop);
-        decorateActionButton(printButton, "print", isTrustedLabel(imageLabel, imageHints));
+        const primaryAction = state.printQueue.active ? "queue" : "print";
+        decorateActionButton(printButton, primaryAction, primaryAction === "print" && isTrustedLabel(imageLabel, imageHints));
       }, { once: true });
     }
 
@@ -1411,6 +1531,7 @@ function renderResults(payload) {
   // A label is on screen: reclaim space from the intake UI (CSS shrinks the
   // download panels) so the option thumbnails and preview can be larger.
   document.body.classList.add("has-results");
+  syncQueueActionButtons();
 }
 
 function makeVariantSwitcher(labels, selectedIndex) {
@@ -1534,13 +1655,21 @@ function makeMultiLabelNotice(labels, count) {
   notice.className = "multi-label-notice";
 
   const copy = document.createElement("div");
-  copy.innerHTML = `<strong>${count} labels found in this PDF</strong><span>Print Label 1 and Label 2 from here. No redownload needed.</span>`;
+  copy.innerHTML = state.printQueue.active
+    ? `<strong>${count} labels found in this PDF</strong><span>Add the full set to the active print queue.</span>`
+    : `<strong>${count} labels found in this PDF</strong><span>Print Label 1 and Label 2 from here. No redownload needed.</span>`;
 
   const printBoth = document.createElement("button");
   printBoth.type = "button";
-  printBoth.className = "label-action label-action-print";
-  printBoth.textContent = "Print both";
-  printBoth.addEventListener("click", () => printLabelsInOrder(labels));
+  printBoth.className = state.printQueue.active
+    ? "label-action label-action-queue"
+    : "label-action label-action-print";
+  printBoth.dataset.action = state.printQueue.active ? "queue" : "print";
+  printBoth.textContent = state.printQueue.active ? `Add all ${count}` : "Print both";
+  printBoth.disabled = state.printQueue.active && (state.queueBusy || state.printQueue.remaining < count);
+  printBoth.addEventListener("click", () => state.printQueue.active
+    ? queueLabelsInOrder(labels)
+    : printLabelsInOrder(labels));
 
   notice.append(copy, printBoth);
   return notice;
@@ -1978,10 +2107,87 @@ function nibbleVariantName(original, level) {
 function makePrintButton(index, label, actionHints) {
   const button = document.createElement("button");
   button.type = "button";
-  button.textContent = "Print";
-  decorateActionButton(button, "print", isTrustedLabel(label, actionHints));
-  button.addEventListener("click", () => printLabelAtIndex(index));
+  const queueMode = state.printQueue.active;
+  button.textContent = queueMode ? "Add to queue" : "Print";
+  decorateActionButton(button, queueMode ? "queue" : "print", !queueMode && isTrustedLabel(label, actionHints));
+  button.disabled = queueMode && (state.queueBusy || state.printQueue.remaining <= 0);
+  button.title = queueMode ? "Add this reviewed label to the print queue." : "Print this label now.";
+  button.addEventListener("click", () => queueMode ? queueLabelAtIndex(index) : printLabelAtIndex(index));
   return button;
+}
+
+async function queueLabelAtIndex(index) {
+  await addLabelIndexesToQueue([index]);
+}
+
+async function queueLabelsInOrder(labels) {
+  const indexes = labels
+    .map((label, index) => ({ label, index }))
+    .filter(({ label }) => Number(label.twinLabelCount || 0) > 1)
+    .sort((a, b) => Number(a.label.twinLabelIndex || a.index + 1) - Number(b.label.twinLabelIndex || b.index + 1))
+    .map(({ index }) => index);
+  await addLabelIndexesToQueue(indexes);
+}
+
+async function addLabelIndexesToQueue(indexes) {
+  if (!state.printQueue.active || state.queueBusy) return;
+  const selected = Array.from(new Set(indexes || []))
+    .map((index) => ({ index, label: state.results[index] }))
+    .filter(({ label }) => Boolean(label));
+  if (!selected.length) return;
+  if (selected.length > state.printQueue.remaining) {
+    setStatus(`Queue has room for ${state.printQueue.remaining} more label${state.printQueue.remaining === 1 ? "" : "s"}.`, "error");
+    showBanner("Print queue is full. Print or remove a queued label first.", "warning", 5000);
+    return;
+  }
+
+  state.queueBusy = true;
+  renderQueuePanel();
+  syncQueueActionButtons();
+  setStatus(`Preparing ${selected.length === 1 ? "label" : `${selected.length} labels`} for the queue...`, "loading");
+  try {
+    const sourceName = state.file?.name || "Label";
+    const prepared = [];
+    for (const { index, label } of selected) {
+      const rawUrl = labelToDataUrl(label);
+      const scaledUrl = await resizeToLabelDpi(rawUrl, 203);
+      const printUrl = await prepareForPrint(scaledUrl);
+      prepared.push({
+        printUrl,
+        name: `${sourceName} - ${resultDisplayName(label, index)}`
+      });
+    }
+    prepared.forEach((entry) => state.printQueue.add(entry));
+    markActiveDownloadQueued();
+    clearLoadedLabelState();
+    resetFileSelection();
+    const count = state.printQueue.count;
+    setStatus(`${count} of ${state.printQueue.maxItems} queued - load the next label or select Print Queue.`);
+    scrollPanelToTop();
+  } catch (error) {
+    setStatus(`Could not add label to queue: ${error.message || "Unknown error"}`, "error");
+    showBanner("Label was not added to the queue. Review it and try again.", "error", 6000);
+  } finally {
+    state.queueBusy = false;
+    renderQueuePanel();
+    syncQueueActionButtons();
+  }
+}
+
+async function printQueuedLabels() {
+  if (!state.printQueue.active || state.queueBusy || !state.printQueue.count) return;
+  const entries = state.printQueue.entries();
+  if (!printQueueDataUrls(entries.map((entry) => entry.printUrl))) {
+    setStatus("Print queue is empty.", "error");
+    return;
+  }
+  await saveLastPrintedQueue(entries);
+  const priorCount = state.labelsPrintedCount;
+  state.labelsPrintedCount += entries.length;
+  if (Math.floor(state.labelsPrintedCount / MEMORY_CLEANUP_EVERY) > Math.floor(priorCount / MEMORY_CLEANUP_EVERY)) {
+    backgroundMemoryCleanup().catch(() => {});
+  }
+  setStatus(`${entries.length}-label print job opened. Clear or exit the queue when finished.`);
 }
 
 async function printLabelsInOrder(labels) {
@@ -2189,12 +2395,26 @@ async function saveLastPrintedLabel(printUrl) {
   refreshReprintButton();
 }
 
+async function saveLastPrintedQueue(entries) {
+  if (!chrome.storage?.session || !entries?.length) return;
+  try {
+    await chrome.storage.session.set({
+      [LAST_PRINTED_LABEL_KEY]: {
+        printUrls: entries.map((entry) => entry.printUrl),
+        name: `Queue (${entries.length} labels)`,
+        printedAt: Date.now()
+      }
+    });
+  } catch (_) {}
+  refreshReprintButton();
+}
+
 async function getFreshLastPrintedLabel() {
   if (!chrome.storage?.session) return null;
   try {
     const data = await chrome.storage.session.get(LAST_PRINTED_LABEL_KEY);
     const entry = data[LAST_PRINTED_LABEL_KEY];
-    if (!entry?.printUrl) return null;
+    if (!entry?.printUrl && !entry?.printUrls?.length) return null;
     if (Date.now() - Number(entry.printedAt || 0) > REPRINT_MAX_AGE_MS) return null;
     return entry;
   } catch (_) {
@@ -2223,7 +2443,8 @@ async function reprintLastLabel() {
     setStatus("No recent label to reprint - the last print has expired.");
     return;
   }
-  printDataUrl(entry.printUrl);
+  if (entry.printUrls?.length) printQueueDataUrls(entry.printUrls);
+  else printDataUrl(entry.printUrl);
   setStatus(`Reprinting "${entry.name}".`);
 }
 
@@ -2231,6 +2452,14 @@ function markActiveDownloadPrinted() {
   if (state.activeDownloadId) {
     state.suppressedDownloadIds.add(state.activeDownloadId);
     renderDownloadsMessage("Printed label hidden. Waiting for the next label download.");
+    state.activeDownloadId = null;
+  }
+}
+
+function markActiveDownloadQueued() {
+  if (state.activeDownloadId) {
+    state.suppressedDownloadIds.add(state.activeDownloadId);
+    renderDownloadsMessage("Queued label hidden. Waiting for the next label download.");
     state.activeDownloadId = null;
   }
 }

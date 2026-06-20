@@ -17,6 +17,7 @@ Chrome/Edge MV3 extension for grabbing and printing shipping labels from Outlook
 - Crops hug the actual label content: blank whitespace bands are trimmed to a small margin, so the printed label fills the sheet without dead space.
 - **Download Label keeps the open email open** — the reading view is restored after the download click; it no longer navigates back to the inbox.
 - Shows results with **Rotate**, **Crop**, **Print**, and **Expand** actions.
+- Includes an optional **Multi-Label Queue** for batch printing when staff need to queue several reviewed labels and print them in one job.
 - The on-screen 4×6 preview matches printed output — white is trimmed and the label fills the sheet — so staff can trust the preview without manual cropping.
 - **Expand** loads the full source page for manual cropping when auto-detection comes up short.
 - **Display size** control (collapsible, at the bottom) scales the whole panel for low-resolution register screens; auto-fits on first open and saves per device.
@@ -38,8 +39,9 @@ Chrome/Edge MV3 extension for grabbing and printing shipping labels from Outlook
 3. If the button doesn't work, use Outlook's own download button — the panel picks up the file automatically.
 4. Click **Use** on the result, or the top candidate loads automatically.
 5. Review the label. Use **Crop**, **Rotate**, or **Expand** if needed.
-6. Click **Print**.
-7. Click **Clear** before the next customer.
+6. Click **Print** for the normal single-label flow, or activate **Multi-Label Queue** if you want to batch several labels.
+7. When queue mode is active, add each reviewed label to the queue, then click **Print Queue** once.
+8. Click **Clear** before the next customer.
 
 ## Display size
 
@@ -55,6 +57,7 @@ The setting is saved per device only.
 | Path | Purpose |
 |---|---|
 | `sidepanel.html` / `sidepanel.js` | Main UI — state, rendering, print/extract orchestration |
+| `app/print-queue.js` | Optional in-memory queue helper for the Multi-Label Queue workflow |
 | `app/print.js` | Monochrome conversion, print HTML, print window flow |
 | `app/downloads.js` | Recent-downloads list, intake, Use/Show/Clear/preview |
 | `app/crop.js` | Crop editor, auto-orient, rotate-to-portrait |

@@ -22,6 +22,21 @@
     </header>
 
     <div id="alertBanner" class="alert-banner" role="status" aria-live="polite" hidden></div>
+    <section id="queueModePanel" class="queue-mode-panel" aria-live="polite" hidden>
+      <header>
+        <div class="queue-mode-heading">
+          <span class="queue-mode-badge">Queue mode active</span>
+          <strong id="queueCount">0 of 10 labels queued</strong>
+        </div>
+        <div class="queue-mode-actions">
+          <button id="printQueue" type="button" disabled>Print Queue</button>
+          <button id="clearQueue" type="button" disabled>Clear Queue</button>
+          <button id="exitQueueMode" type="button">Exit Queue</button>
+        </div>
+      </header>
+      <p id="queueHint">Review each label, then select Add to queue. Print Queue opens one print job for the full batch.</p>
+      <div id="queueItems" class="queue-items"></div>
+    </section>
     <div id="dropOverlay" class="drop-overlay" hidden>
       <div class="drop-overlay-panel">
         <strong>Drop label to extract</strong>
@@ -129,6 +144,14 @@
       <p id="clearReminder" class="clear-reminder" hidden>Always clear before the next label</p>
     </section>
 
+    <section id="queueLauncher" class="queue-launcher">
+      <div>
+        <strong>Batch printing</strong>
+        <span>Optional: collect up to 10 labels, then print once.</span>
+      </div>
+      <button id="activateQueueMode" type="button">Multi-Label Queue</button>
+    </section>
+
     <details class="print-settings-disclosure" open>
       <summary><strong>Print: 4x6 Label</strong></summary>
       <section id="printSettings" class="print-settings inactive">
@@ -189,6 +212,7 @@
   <script src="detection/pdf-processor.js"></script>
   <script src="detection/png-processor.js"></script>
   <script src="config.js"></script>
+  <script src="app/print-queue.js"></script>
   <script src="app/print.js"></script>
   <script src="app/grab-recovery.js"></script>
   <script src="app/downloads.js"></script>

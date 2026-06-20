@@ -179,6 +179,8 @@ async function prepareForPrint(dataUrl) {
 }
 
 function printDataUrl(dataUrl) {
+  printHtmlDocument(makePrintHtml(dataUrl));
+  return;
   // Open an independent, screen-centered print window (what staff prefer to see).
   // Printing is driven from here (the parent) once the label image has actually
   // loaded, then the window closes itself after printing — a single deterministic
@@ -269,6 +271,107 @@ function whenLabelImageReady(doc, callback) {
   img.addEventListener("error", callback, { once: true });
 }
 
+function printQueueDataUrls(dataUrls) {
+  const urls = Array.from(dataUrls || []).filter((url) => typeof url === "string" && url.startsWith("data:"));
+  if (!urls.length) return false;
+  if (urls.length === 1) {
+    printDataUrl(urls[0]);
+    return true;
+  }
+  printHtmlDocument(makeQueuePrintHtml(urls));
+  return true;
+}
+
+function printHtmlDocument(html) {
+  const bounds = getPrintPopupBounds();
+  const printWindow = window.open("", "_blank", [
+    `width=${bounds.width}`,
+    `height=${bounds.height}`,
+    `left=${bounds.left}`,
+    `top=${bounds.top}`,
+    `screenX=${bounds.left}`,
+    `screenY=${bounds.top}`
+  ].join(","));
+
+  if (printWindow) {
+    positionPrintWindow(printWindow, bounds);
+    printWindow.document.open();
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindowWhenReady(printWindow);
+    return;
+  }
+
+  const frame = document.createElement("iframe");
+  frame.className = "print-frame";
+  frame.setAttribute("aria-hidden", "true");
+
+  let done = false;
+  const cleanup = () => {
+    if (done) return;
+    done = true;
+    frame.remove();
+  };
+
+  frame.addEventListener("load", () => {
+    const win = frame.contentWindow;
+    if (!win) { cleanup(); return; }
+    whenPrintImagesReady(frame.contentDocument, () => {
+      try {
+        win.addEventListener("afterprint", () => setTimeout(cleanup, 250), { once: true });
+        win.focus();
+        win.print();
+      } catch (_) {
+        cleanup();
+        return;
+      }
+      setTimeout(cleanup, 120000);
+    });
+  }, { once: true });
+
+  document.body.append(frame);
+  frame.srcdoc = html;
+}
+
+function printWindowWhenReady(win) {
+  let printed = false;
+  const fire = () => {
+    if (printed || win.closed) return;
+    printed = true;
+    try {
+      win.addEventListener("afterprint", () => {
+        setTimeout(() => { try { win.close(); } catch (_) {} }, 250);
+      }, { once: true });
+      win.focus();
+      win.print();
+    } catch (_) {}
+  };
+
+  whenPrintImagesReady(win.document, fire);
+  setTimeout(fire, 3000);
+}
+
+function whenPrintImagesReady(doc, callback) {
+  const images = Array.from(doc?.querySelectorAll?.("img[data-print-label], #label") || []);
+  if (!images.length || images.every((image) => image.complete)) {
+    callback();
+    return;
+  }
+  let remaining = images.filter((image) => !image.complete).length;
+  let fired = false;
+  const noteReady = () => {
+    remaining -= 1;
+    if (fired || remaining > 0) return;
+    fired = true;
+    callback();
+  };
+  images.forEach((image) => {
+    if (image.complete) return;
+    image.addEventListener("load", noteReady, { once: true });
+    image.addEventListener("error", noteReady, { once: true });
+  });
+}
+
 function getPrintPopupBounds() {
   const screenLeft = Number(window.screen.availLeft || 0);
   const screenTop = Number(window.screen.availTop || 0);
@@ -294,6 +397,47 @@ function positionPrintWindow(win, bounds) {
 
 function makePrintHtml(dataUrl) {
   return makeLabelPrintHtml(escapeHtml(dataUrl));
+}
+
+function makeQueuePrintHtml(dataUrls) {
+  const pages = dataUrls.map((dataUrl, index) => `
+  <section class="label-page" aria-label="Label ${index + 1} of ${dataUrls.length}">
+    <img data-print-label src="${escapeHtml(dataUrl)}" alt="Shipping label ${index + 1}">
+  </section>`).join("");
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Print ${dataUrls.length} Labels</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    @page { size: 4in 6in; margin: 0; }
+    html { min-height: 100%; background: #e8eaed; }
+    body { display: grid; gap: 18px; justify-content: center; padding: 24px; }
+    .print-summary {
+      position: sticky; top: 8px; z-index: 1; padding: 10px 14px; border-radius: 9px;
+      background: #312e81; color: #fff; font: 700 14px/1.2 "Segoe UI", sans-serif;
+      text-align: center; box-shadow: 0 5px 18px rgba(15,23,42,.2);
+    }
+    .label-page {
+      width: 4in; height: 6in; overflow: hidden; background: #fff;
+      box-shadow: 0 4px 24px rgba(0,0,0,.18); break-after: page; page-break-after: always;
+    }
+    .label-page:last-child { break-after: auto; page-break-after: auto; }
+    img { width: 4in; height: 6in; display: block; object-fit: contain; background: #fff;
+      image-rendering: pixelated; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges; }
+    @media print {
+      html, body { background: #fff; }
+      body { display: block; padding: 0; }
+      .print-summary { display: none; }
+      .label-page { margin: 0; box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="print-summary">${dataUrls.length} labels in this print job</div>${pages}
+</body>
+</html>`;
 }
 
 function makeLabelPrintHtml(escapedDataUrl) {
