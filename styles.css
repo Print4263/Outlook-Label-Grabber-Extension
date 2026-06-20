@@ -966,10 +966,10 @@ h2 {
 }
 
 .variant-option {
-  flex: 1 0 132px;
-  min-width: 132px;
+  flex: 1 0 168px;
+  min-width: 168px;
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr);
+  grid-template-columns: 72px minmax(0, 1fr);
   align-items: center;
   gap: 9px;
   padding: 7px;
@@ -990,8 +990,8 @@ h2 {
 }
 
 .variant-option img {
-  width: 46px;
-  height: 62px;
+  width: 72px;
+  height: 104px;
   object-fit: contain;
   border: 1px solid #cbd5e1;
   border-radius: 5px;
@@ -1245,6 +1245,26 @@ h2 {
   border-radius: 10px;
   background: #f8fafc;
   object-fit: contain;
+}
+
+/* Once a label result is on screen, reclaim space from the intake UI so the
+   label-option thumbnails and the working preview can be larger — staff with
+   less sharp eyes get a bigger view of what they're about to print. The intake
+   UI returns in full when the label is cleared for the next customer. */
+body.has-results .download-label-panel p {
+  display: none;
+}
+body.has-results .download-label-panel button {
+  padding: 8px 12px;
+  font-size: 14px;
+}
+body.has-results .recent-downloads .downloads-list,
+body.has-results .recent-downloads .download-preview {
+  display: none;
+}
+body.has-results .preview {
+  height: clamp(380px, 58vh, 680px);
+  max-height: 680px;
 }
 
 .preview-zoomable {

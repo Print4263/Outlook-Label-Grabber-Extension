@@ -993,6 +993,7 @@ function clearLoadedLabelState() {
   els.clearReminder.hidden = true;
   els.printSettings.classList.add("inactive");
   setManualTipVisible(true);
+  document.body.classList.remove("has-results");
   updateSheetPreview();
 }
 
@@ -1308,6 +1309,7 @@ function renderResults(payload) {
     els.results.append(empty);
     els.printSettings.classList.add("inactive");
     setManualTipVisible(true);
+    document.body.classList.remove("has-results");
     return;
   }
 
@@ -1406,6 +1408,9 @@ function renderResults(payload) {
   // the tips visible because they are relevant.
   const primaryLabel = payload.labels[state.selectedLabelIndex] || payload.labels[0];
   setManualTipVisible(!(primaryLabel && getLabelActionHints(primaryLabel).printReady));
+  // A label is on screen: reclaim space from the intake UI (CSS shrinks the
+  // download panels) so the option thumbnails and preview can be larger.
+  document.body.classList.add("has-results");
 }
 
 function makeVariantSwitcher(labels, selectedIndex) {
