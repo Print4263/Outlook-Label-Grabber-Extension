@@ -1850,10 +1850,10 @@ function makeCropButton(index, actionHints) {
 // Straight pixel copy only - never the content-aware crop, which would re-absorb
 // chrome on tighten or re-trim on loosen. App-layer only: nothing here touches
 // detection, ranking, candidate selection, or crop-engine.
-const NIBBLE_STEP = 0.125;            // loosen: +25% again per user (0.10 -> 0.125) so each tap moves more
+const NIBBLE_STEP = 0.166;            // loosen: +33% again per user (0.125 -> 0.166) so each tap moves more
 const NIBBLE_MIN_BASE_FRACTION = 0.4; // floor for the uniform-inset tighten fallback
-const TIGHTEN_GAP_FRACTION = 0.78;    // tighten: +25% again (0.625 -> 0.78), closes most of the label-box gap per level
-const TIGHTEN_UNIFORM_STEP = 0.078;   // tighten fallback (no content box found): +25% again (0.0625 -> 0.078)
+const TIGHTEN_GAP_FRACTION = 1.0;     // tighten: +33% (0.78 -> 1.04) clamps to 1.0 = one tap reaches the label box
+const TIGHTEN_UNIFORM_STEP = 0.104;   // tighten fallback (no content box found): +33% (0.078 -> 0.104)
 
 function makeNibbleControls(index, label) {
   if (label?.outputMimeType === "application/pdf") return null;
