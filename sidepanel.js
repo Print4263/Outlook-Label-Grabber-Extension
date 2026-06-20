@@ -1853,7 +1853,7 @@ function makeCropButton(index, actionHints) {
 const NIBBLE_STEP = 0.166;            // loosen: +33% again per user (0.125 -> 0.166) so each tap moves more
 const NIBBLE_MIN_BASE_FRACTION = 0.4; // floor for the uniform-inset tighten fallback
 const TIGHTEN_GAP_FRACTION = 1.0;     // tighten: +33% (0.78 -> 1.04) clamps to 1.0 = one tap reaches the label box
-const TIGHTEN_UNIFORM_STEP = 0.104;   // tighten fallback (no content box found): +33% (0.078 -> 0.104)
+const TIGHTEN_UNIFORM_STEP = 0.078;   // tighten fallback: back to 0.078 (0.104 overshot — tap 3 grabbed past the white edges into the label)
 
 function makeNibbleControls(index, label) {
   if (label?.outputMimeType === "application/pdf") return null;
