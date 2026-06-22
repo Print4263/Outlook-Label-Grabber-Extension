@@ -83,7 +83,7 @@ const AUTO_CLEANUP_THRESHOLD = 15;
 const AUTO_CLEANUP_KEEP = 3;
 const MANUAL_CLEANUP_KEEP = 1;
 const CLEAR_WARNING_DELAY_MS = 40000;
-const CLEAR_COUNTDOWN_SECONDS = 60;
+const CLEAR_COUNTDOWN_SECONDS = 45;
 // After this much complete inactivity (no pointer/key/scroll/touch), scroll the
 // panel back to the top so the next person starts at a clean view. Tunable.
 const IDLE_SCROLL_TO_TOP_MS = 120000;
