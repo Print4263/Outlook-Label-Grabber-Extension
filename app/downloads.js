@@ -267,6 +267,7 @@ function renderRecentDownloads(downloads, senderInfo) {
       requestAnimationFrame(() => useButton.focus({ preventScroll: true }));
     }
   }
+
 }
 
 function getDownloadFreshness(download) {
@@ -328,7 +329,8 @@ async function useDownloadedFile(download, options = {}) {
     }
   } catch (error) {
     if (!options.automatic) {
-      setStatus(`Could not open the downloaded file: ${error.message}. In chrome://extensions, enable “Allow access to file URLs”, then retry. Or select Show and drag the file here.`);
+      setStatus(`Could not open the downloaded file: ${error.message}. In chrome://extensions, enable “Allow access to file URLs”, then retry. Or select Show and drag the file here.`, "error");
+      showBanner("Could not open that download. Enable “Allow access to file URLs” in chrome://extensions, then retry — or use Show and drag the file in.", "error", 9000);
     }
   }
 }
@@ -378,6 +380,7 @@ async function loadContextLabelUrl(url, suggestedName) {
     await extractSelectedFile();
   } catch (error) {
     setStatus(`Could not send label from page: ${error.message}`, "error");
+    showBanner(`Could not load that label: ${error.message}. Try Recent downloads or Choose file.`, "error", 8000);
   }
 }
 
@@ -406,6 +409,7 @@ async function loadContextLabelDataUrl(dataUrl, suggestedName, suggestedType) {
     await extractSelectedFile();
   } catch (error) {
     setStatus(`Could not send label from page: ${error.message}`, "error");
+    showBanner(`Could not load that label: ${error.message}. Try Recent downloads or Choose file.`, "error", 8000);
   }
 }
 

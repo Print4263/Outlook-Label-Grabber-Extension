@@ -99,10 +99,16 @@ const RECENT_DRAGGED_LABEL_KEY = "recentDraggedLabel";
 const RECENT_DRAGGED_LABEL_MAX_AGE_MS = 2 * 60 * 1000;
 const LAST_PRINTED_LABEL_KEY = "lastPrintedLabel";
 const REPRINT_MAX_AGE_MS = 10 * 60 * 1000;
+// Recently-printed fingerprints for duplicate-print protection. Kept in
+// storage.session so it survives a panel reload but is wiped when the browser
+// closes (a fresh register each shift), like the reprint entry.
+const PRINTED_FINGERPRINTS_KEY = "printedLabelFingerprints";
+const DUPLICATE_WINDOW_MS = 30 * 60 * 1000;
 const LabelFeedback = window.LabelExtractorFeedback;
 const RuntimeHealth = window.LabelExtractorRuntimeHealth;
 const GrabRecovery = window.LabelExtractorGrabRecovery;
 const PrintQueueApi = window.LabelExtractorPrintQueue;
+const DuplicateGuard = window.LabelExtractorDuplicateGuard;
 state.printQueue = PrintQueueApi.createPrintQueue({ maxItems: 10 });
 let labelLogWriteErrorCount = 0;
 const failureLogStore = LabelFeedback.createFailureLogStore({
@@ -909,15 +915,29 @@ const MEMORY_CLEANUP_EVERY = 4;
 
 async function backgroundMemoryCleanup() {
   if (chrome.storage?.session) {
-    // Preserve the reprint entry across the session wipe — it expires on its
-    // own schedule, and losing it here would defeat reprint right after the
-    // print that triggered this cleanup.
-    const lastPrinted = await getFreshLastPrintedLabel();
+    // Preserve print-safety state across the session wipe. Both records expire
+    // on their own schedules; losing either immediately after the fourth print
+    // would defeat Reprint or duplicate protection.
+    const [lastPrinted, printedFingerprints] = await Promise.all([
+      getFreshLastPrintedLabel(),
+      getPrintedFingerprints()
+    ]);
+    let sessionCleared = false;
     try {
       await chrome.storage.session.clear();
-    } catch (_) {}
-    if (lastPrinted) {
-      chrome.storage.session.set({ [LAST_PRINTED_LABEL_KEY]: lastPrinted }).catch(() => {});
+      sessionCleared = true;
+    } catch (error) {
+      console.warn("[Label Extractor] Session cleanup failed.", error);
+    }
+    const preserved = {};
+    if (lastPrinted) preserved[LAST_PRINTED_LABEL_KEY] = lastPrinted;
+    if (printedFingerprints.length) preserved[PRINTED_FINGERPRINTS_KEY] = printedFingerprints;
+    if (sessionCleared && Object.keys(preserved).length) {
+      try {
+        await chrome.storage.session.set(preserved);
+      } catch (error) {
+        console.warn("[Label Extractor] Could not restore print-safety state after cleanup.", error);
+      }
     }
   }
 
@@ -1077,11 +1097,15 @@ function setFile(file) {
 
   if (!file) return;
   if (!isSupportedFile(file)) {
-    setStatus("Choose a PDF or image file (PNG, JPG, GIF, WEBP, HEIC).");
+    const message = "That file is not a label. Choose a PDF or image (PNG, JPG, GIF, WEBP, HEIC).";
+    setStatus(message, "error");
+    showBanner(message, "error", 6000);
     return;
   }
   if (file.size > LabelExtractorConfig.MAX_UPLOAD_BYTES) {
-    setStatus("File is too large. Use a smaller PDF or image.");
+    const message = "File is too large. Use a smaller PDF or image, then try again.";
+    setStatus(message, "error");
+    showBanner(message, "error", 6000);
     return;
   }
 
@@ -1162,7 +1186,8 @@ async function handleDrop(event) {
     return;
   }
 
-  setStatus("Drop did not include a readable file. Use Recent downloads or Choose file.");
+  setStatus("Drop did not include a readable file. Use Recent downloads or Choose file.", "error");
+  showBanner("That drop did not contain a label file. Use Recent downloads or Choose file instead.", "warning", 6000);
 }
 
 async function useDownloadedId(id) {
@@ -1219,6 +1244,7 @@ async function tryResolveDroppedBlobLabel(url) {
     await loadContextLabelDataUrl(response.payload.dataUrl, response.payload.name, response.payload.type);
   } catch (error) {
     setStatus(`Could not read dragged label: ${error.message}`, "error");
+    showBanner(`Could not read the dragged label: ${error.message}. Try Recent downloads or Choose file.`, "error", 7000);
   }
 }
 
@@ -1227,7 +1253,10 @@ async function recentDraggedLabelForUrl(url) {
     const data = await chrome.storage.local.get(RECENT_DRAGGED_LABEL_KEY);
     const recent = data[RECENT_DRAGGED_LABEL_KEY];
     if (!recent?.url && !recent?.dataUrl) return null;
-    if (Date.now() - Number(recent.createdAt || 0) > RECENT_DRAGGED_LABEL_MAX_AGE_MS) return null;
+    if (Date.now() - Number(recent.createdAt || 0) > RECENT_DRAGGED_LABEL_MAX_AGE_MS) {
+      await chrome.storage.local.remove(RECENT_DRAGGED_LABEL_KEY);
+      return null;
+    }
     if (recent.url && url && recent.url !== url) return null;
     await chrome.storage.local.remove(RECENT_DRAGGED_LABEL_KEY).catch(() => {});
     return recent;
@@ -2196,10 +2225,23 @@ async function addLabelIndexesToQueue(indexes) {
 async function printQueuedLabels() {
   if (!state.printQueue.active || state.queueBusy || !state.printQueue.count) return;
   const entries = state.printQueue.entries();
-  if (!printQueueDataUrls(entries.map((entry) => entry.printUrl))) {
+  const fingerprints = entries.map((entry) => DuplicateGuard.fingerprintLabel({ name: entry.name }, entry.printUrl));
+  if (!(await confirmNotDuplicate(fingerprints))) {
+    setStatus("Duplicate print cancelled — the queue was not printed.");
+    return;
+  }
+  let started;
+  try {
+    started = printQueueDataUrls(entries.map((entry) => entry.printUrl));
+  } catch (error) {
+    reportPrintFailure(error);
+    return;
+  }
+  if (!started) {
     setStatus("Print queue is empty.", "error");
     return;
   }
+  await recordPrintedFingerprints(fingerprints);
   await saveLastPrintedQueue(entries);
   const priorCount = state.labelsPrintedCount;
   state.labelsPrintedCount += entries.length;
@@ -2216,30 +2258,146 @@ async function printLabelsInOrder(labels) {
     .sort((a, b) => Number(a.label.twinLabelIndex || a.index + 1) - Number(b.label.twinLabelIndex || b.index + 1));
 
   for (const item of ordered) {
-    await printLabelAtIndex(item.index, { keepDownloadVisible: item !== ordered[ordered.length - 1] });
+    const started = await printLabelAtIndex(item.index, {
+      keepDownloadVisible: item !== ordered[ordered.length - 1]
+    });
+    if (!started) return false;
     await delay(350);
   }
+  return true;
 }
 
 async function printLabelAtIndex(index, options = {}) {
   const label = state.results[index];
-  if (!label) return;
+  if (!label) return false;
 
   state.selectedLabelIndex = index;
   updateSheetPreview();
+  const displayName = resultDisplayName(label, index);
   const rawUrl = labelToDataUrl(label);
   const scaledUrl = await resizeToLabelDpi(rawUrl, 203);
   const printUrl = await prepareForPrint(scaledUrl);
-  printDataUrl(printUrl);
+
+  // Duplicate-print protection: confirm before re-printing a label that matches
+  // one already printed in this window (same tracking number, or the identical
+  // print image for B2B labels with no decodable barcode).
+  const fingerprint = DuplicateGuard.fingerprintLabel({ ...label, name: displayName }, printUrl);
+  if (!options.skipDuplicateCheck && !(await confirmNotDuplicate([fingerprint]))) {
+    setStatus("Duplicate print cancelled — nothing was sent to the printer.");
+    return false;
+  }
+
+  try {
+    printDataUrl(printUrl);
+  } catch (error) {
+    reportPrintFailure(error);
+    return false;
+  }
+  await recordPrintedFingerprints([fingerprint]);
   await saveLastPrintedLabel(printUrl);
-  resetInactivityTimer("printed");
-  if (!options.keepDownloadVisible) markActiveDownloadPrinted();
-  els.clearButton.classList.add("needs-clear");
-  els.clearReminder.hidden = false;
   state.labelsPrintedCount++;
   if (state.labelsPrintedCount % MEMORY_CLEANUP_EVERY === 0) {
     backgroundMemoryCleanup().catch(() => {});
   }
+  if (!options.keepDownloadVisible) {
+    markActiveDownloadPrinted();
+    finishAfterPrint(displayName);
+  }
+  return true;
+}
+
+// After starting the print flow, automatically clear the label so the panel is
+// ready for the next customer and the same label cannot be started twice by
+// accident. Chrome does not report whether staff completed or cancelled the
+// system dialog, so the wording stays honest. Reprint remains available for
+// REPRINT_MAX_AGE_MS. Used for single prints and the final label of a twin sheet.
+function finishAfterPrint(name) {
+  clearLoadedLabelState();
+  clearTimeout(state.inactivityTimer);
+  state.inactivityTimer = null;
+  state.clearMode = "idle";
+  resetFileSelection();
+  showBanner(
+    `Print flow started for "${name}" and the panel was cleared — ready for the next label. Reprint stays available for 10 minutes.`,
+    "success",
+    6000
+  );
+  setStatus("Print flow started and panel cleared — ready for the next label.");
+  scrollPanelToTop();
+}
+
+function reportPrintFailure(error) {
+  if (error && state.uiMode === "lab") console.error("[Label Extractor] Print failed", error);
+  showBanner(
+    "Could not open the print dialog. Allow pop-ups for this extension in Chrome, then use Reprint or print again.",
+    "error",
+    9000
+  );
+  setStatus("Print did not start — see the message above.", "error");
+}
+
+// --- Duplicate-print protection ---------------------------------------------
+// Reads/writes the recently-printed fingerprint history (storage.session) and
+// guards a print so staff confirm before sending a label that matches one
+// already printed in this window. The pure matching logic lives in
+// app/duplicate-guard.js; this layer only handles storage and the staff prompt.
+async function getPrintedFingerprints() {
+  if (!chrome.storage?.session || !DuplicateGuard) return [];
+  try {
+    const data = await chrome.storage.session.get(PRINTED_FINGERPRINTS_KEY);
+    return DuplicateGuard.pruneHistory(data[PRINTED_FINGERPRINTS_KEY] || [], { windowMs: DUPLICATE_WINDOW_MS });
+  } catch (error) {
+    console.warn("[Label Extractor] Could not read duplicate-print history.", error);
+    return [];
+  }
+}
+
+async function recordPrintedFingerprints(fingerprints) {
+  if (!chrome.storage?.session || !DuplicateGuard) return;
+  try {
+    let history = await getPrintedFingerprints();
+    for (const fingerprint of fingerprints || []) {
+      history = DuplicateGuard.recordPrint(history, fingerprint, { windowMs: DUPLICATE_WINDOW_MS });
+    }
+    await chrome.storage.session.set({ [PRINTED_FINGERPRINTS_KEY]: history });
+  } catch (error) {
+    console.warn("[Label Extractor] Could not save duplicate-print history.", error);
+  }
+}
+
+// Returns true when it is OK to print: either no duplicate is detected, or the
+// staff member explicitly confirmed the duplicate. Checks both the stored
+// recent-print history and earlier labels within the same batch.
+async function confirmNotDuplicate(fingerprints) {
+  if (!DuplicateGuard) return true;
+  const history = await getPrintedFingerprints();
+  const seenInBatch = new Set();
+  const dups = [];
+  for (const fingerprint of fingerprints || []) {
+    if (!fingerprint?.key) continue;
+    const priorInBatch = seenInBatch.has(fingerprint.key);
+    const priorPrinted = DuplicateGuard.findDuplicate(history, fingerprint, { windowMs: DUPLICATE_WINDOW_MS });
+    if (priorInBatch || priorPrinted) dups.push({ fingerprint, priorPrinted });
+    seenInBatch.add(fingerprint.key);
+  }
+  if (!dups.length) return true;
+
+  const lines = dups.map(({ fingerprint, priorPrinted }) => {
+    const what = fingerprint.tracking ? `tracking ${fingerprint.tracking}` : fingerprint.name;
+    if (!priorPrinted) return `• ${what} — appears twice in this batch`;
+    const when = new Date(Number(priorPrinted.printedAt))
+      .toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    return `• ${what} — already printed at ${when}`;
+  });
+  showBanner(
+    `Possible duplicate label${dups.length === 1 ? "" : "s"} detected — confirm before printing.`,
+    "warning",
+    9000
+  );
+  return window.confirm(
+    `⚠ Possible duplicate ${dups.length === 1 ? "label" : "labels"} detected:\n\n${lines.join("\n")}\n\n`
+    + "Printing again can cause a duplicate shipment. Print anyway?"
+  );
 }
 
 function makeExpandButton(index, label) {

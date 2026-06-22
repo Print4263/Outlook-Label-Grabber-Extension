@@ -3,6 +3,8 @@
 
   const RECENT_DRAGGED_LABEL_KEY = "recentDraggedLabel";
   const MAX_DRAG_CAPTURE_BYTES = 35 * 1024 * 1024;
+  const RECENT_DRAGGED_LABEL_MAX_AGE_MS = 2 * 60 * 1000;
+  let recentDragCleanupTimer = null;
 
   document.addEventListener("dragstart", (event) => {
     captureDraggedLabel(event).catch(() => {});
@@ -20,6 +22,8 @@
       url: candidate.url,
       name: dragData?.filenameFromUrl?.(candidate.url) || "dragged-label",
       type: candidate.type || "",
+      captureId: globalThis.crypto?.randomUUID?.()
+        || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
       createdAt: Date.now()
     };
 
@@ -35,6 +39,19 @@
     }
 
     await chrome.storage.local.set({ [RECENT_DRAGGED_LABEL_KEY]: payload });
+    scheduleRecentDragCleanup(payload.captureId);
+  }
+
+  function scheduleRecentDragCleanup(captureId) {
+    clearTimeout(recentDragCleanupTimer);
+    recentDragCleanupTimer = setTimeout(async () => {
+      try {
+        const data = await chrome.storage.local.get(RECENT_DRAGGED_LABEL_KEY);
+        if (data[RECENT_DRAGGED_LABEL_KEY]?.captureId === captureId) {
+          await chrome.storage.local.remove(RECENT_DRAGGED_LABEL_KEY);
+        }
+      } catch (_) { /* best-effort expiry; the panel also removes stale entries */ }
+    }, RECENT_DRAGGED_LABEL_MAX_AGE_MS);
   }
 
   function labelDragCandidate(target) {

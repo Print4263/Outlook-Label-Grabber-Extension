@@ -18,7 +18,16 @@ let popoutLayoutSaveTimer = null;
 function isOutlookUrl(url) {
   if (!url) return false;
   try {
-    return OUTLOOK_ORIGINS.some((origin) => url.startsWith(origin));
+    return OUTLOOK_ORIGINS.includes(new URL(url).origin);
+  } catch (_) {
+    return false;
+  }
+}
+
+function hasExactOrigin(url, origin) {
+  if (!url || !origin) return false;
+  try {
+    return new URL(url).origin === origin;
   } catch (_) {
     return false;
   }
@@ -309,7 +318,7 @@ async function resolveDroppedBlobLabel(url) {
   if (!origin) throw new Error("That protected label link is not tied to a readable page.");
 
   const tabs = await chrome.tabs.query({});
-  const candidates = tabs.filter((tab) => String(tab.url || "").startsWith(origin));
+  const candidates = tabs.filter((tab) => hasExactOrigin(tab.url, origin));
   if (!candidates.length) throw new Error("Keep the Outlook/order page open, then drag the label again.");
 
   for (const tab of candidates) {

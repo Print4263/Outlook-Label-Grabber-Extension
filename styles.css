@@ -1825,6 +1825,11 @@ body.has-results .preview {
   border: 1px solid #bfdbfe;
   color: #1e3a8a;
 }
+.alert-banner.success {
+  background: #dcfce7;
+  border: 1px solid #86efac;
+  color: #166534;
+}
 
 /* Inactivity countdown strip — shown in final 10s before auto-clear */
 .inactivity-warning {
