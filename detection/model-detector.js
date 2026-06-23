@@ -133,7 +133,9 @@
   async function getSession() {
     if (!sessionPromise) {
       window.ort.env.wasm.wasmPaths = assetUrl("lib/");
-      window.ort.env.wasm.numThreads = 1;
+      const isolated = typeof crossOriginIsolated !== "undefined" && crossOriginIsolated;
+      const cores = (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 1;
+      window.ort.env.wasm.numThreads = isolated ? Math.min(4, Math.max(1, cores)) : 1;
       sessionPromise = window.ort.InferenceSession.create(assetUrl(MODEL_PATH), {
         executionProviders: ["wasm"],
         graphOptimizationLevel: "all"
