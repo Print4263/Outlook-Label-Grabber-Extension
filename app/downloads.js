@@ -156,6 +156,8 @@ function renderRecentDownloads(downloads, senderInfo) {
     return;
   }
 
+  clearGrabRecoveryForVisibleDownload(visible[0]);
+
   const nextSignature = visible.map((d) => `${d.id}:${d.filename}:${d.fileSize || d.totalBytes || 0}`).join("|");
   if (els.downloadsList.dataset.signature === nextSignature) {
     state.firstPollDone = true;
@@ -267,7 +269,12 @@ function renderRecentDownloads(downloads, senderInfo) {
       requestAnimationFrame(() => useButton.focus({ preventScroll: true }));
     }
   }
+}
 
+function clearGrabRecoveryForVisibleDownload(download) {
+  if (!download || !els.grabRecoveryMessage || els.grabRecoveryMessage.hidden) return;
+  clearGrabRecoveryGuide();
+  setStatus(`${basename(download.filename)} is ready — select Use below.`);
 }
 
 function getDownloadFreshness(download) {
@@ -302,11 +309,13 @@ function renderDownloadsMessage(message) {
 }
 
 async function useDownloadedFile(download, options = {}) {
+  if (state.downloadReplacementBusy) return;
   if (options.requireStaleConfirm && !window.confirm("This label download is older than 10 minutes. Use it anyway?")) {
     setStatus("Older label not used.");
     return;
   }
 
+  state.downloadReplacementBusy = true;
   try {
     setStatus(options.automatic ? "Loading newest download..." : "Loading downloaded file...", "loading");
     const response = await fetch(pathToFileUrl(download.filename));
@@ -314,6 +323,24 @@ async function useDownloadedFile(download, options = {}) {
     const blob = await response.blob();
     const name = basename(download.filename);
     const file = new File([blob], name, { type: blob.type || mimeTypeFromName(name) });
+    if (!isSupportedFile(file)) {
+      setStatus("That download is not a supported label file.", "error");
+      showBanner("Kept the current label. Choose a PDF or image download instead.", "error", 7000);
+      return;
+    }
+    if (file.size > LabelExtractorConfig.MAX_UPLOAD_BYTES) {
+      setStatus("That downloaded label is too large to open.", "error");
+      showBanner("Kept the current label. Use a smaller PDF or image download.", "error", 7000);
+      return;
+    }
+    const incomingFingerprint = await fingerprintSourceFile(file);
+
+    if (!(await confirmDownloadReplacement(file, incomingFingerprint))) {
+      setStatus(state.file
+        ? "Kept the current label. The download is still available under Recent downloads."
+        : "Download not used. It remains available under Recent downloads.");
+      return;
+    }
 
     setFile(file);
     if (download?.id) {
@@ -332,6 +359,8 @@ async function useDownloadedFile(download, options = {}) {
       setStatus(`Could not open the downloaded file: ${error.message}. In chrome://extensions, enable “Allow access to file URLs”, then retry. Or select Show and drag the file here.`, "error");
       showBanner("Could not open that download. Enable “Allow access to file URLs” in chrome://extensions, then retry — or use Show and drag the file in.", "error", 9000);
     }
+  } finally {
+    state.downloadReplacementBusy = false;
   }
 }
 

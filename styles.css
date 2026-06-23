@@ -521,7 +521,7 @@ h2 {
 .download-label-panel p {
   display: grid;
   gap: 3px;
-  color: #166534;
+  color: #005daa;
   font-size: 13px;
   font-weight: 700;
 }
@@ -657,16 +657,16 @@ h2 {
   min-height: 58px;
   width: 100%;
   color: #fff;
-  border-color: #15803d;
-  background: linear-gradient(180deg, #22c55e, #16a34a);
-  box-shadow: 0 4px 14px rgba(22, 163, 74, 0.32);
+  border-color: #004b87;
+  background: linear-gradient(180deg, #0072ce, #005daa);
+  box-shadow: 0 4px 14px rgba(0, 93, 170, 0.32);
   font-size: 19px;
   font-weight: 900;
 }
 
 #grabOutlookAttachment:hover {
-  border-color: #166534;
-  background: linear-gradient(180deg, #4ade80, #22c55e);
+  border-color: #003f72;
+  background: linear-gradient(180deg, #1984d6, #0072ce);
 }
 
 #clearDownloads:hover {
@@ -1475,6 +1475,79 @@ body.has-results .preview {
   font-weight: 800;
 }
 
+.replacement-prompt {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.replacement-prompt-panel {
+  display: grid;
+  gap: 14px;
+  width: min(460px, 92vw);
+  padding: 20px;
+  border: 1px solid #cbd5e1;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.35);
+}
+
+.replacement-prompt-panel h2 {
+  margin: 0;
+  font-size: 21px;
+  color: #0f172a;
+}
+
+.replacement-prompt-messages {
+  display: grid;
+  gap: 9px;
+}
+
+.replacement-prompt-messages p {
+  margin: 0;
+  line-height: 1.42;
+}
+
+.replacement-prompt-warning {
+  padding: 10px 12px;
+  border: 1px solid #fbbf24;
+  border-radius: 9px;
+  background: #fffbeb;
+  color: #78350f;
+  font-weight: 700;
+}
+
+.replacement-prompt-file {
+  color: #475569;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.replacement-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.replacement-prompt-actions button {
+  min-height: 42px;
+  padding: 0 15px;
+}
+
+.replacement-prompt-actions .primary-button {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #fff;
+}
+
+.replacement-prompt-actions .primary-button:hover {
+  background: #1d4ed8;
+}
+
 .warnings {
   margin: 0;
   padding-left: 20px;
@@ -1951,6 +2024,22 @@ body.has-results .preview {
 .label-action-nibble:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+/* Lab-only Smart Fit prototype button: the nibble base is a 42px square sized
+   for the +/- glyphs, so widen it and shrink the font to fit the "Smart fit"
+   label, and tint it so it reads as a separate experimental action. */
+.label-action-smartfit {
+  min-width: auto;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 700;
+  border-color: #c4b5fd;
+  color: #4c1d95;
+  background: linear-gradient(180deg, #f5f3ff, #ede9fe);
+}
+.label-action-smartfit:hover {
+  background: linear-gradient(180deg, #ede9fe, #ddd6fe);
 }
 
 /* 4x6 reference frame inscribed in the crop box (Phase 1 / B3). Faint dashed by

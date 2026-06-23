@@ -28,6 +28,7 @@ const state = {
   downloadsClearedAt: 0,
   firstPollDone: false,
   downloadCleanupInProgress: false,
+  downloadReplacementBusy: false,
   labelsPrintedCount: 0,
   extractionRunId: 0,
   extractionInProgress: false,
@@ -104,11 +105,13 @@ const REPRINT_MAX_AGE_MS = 10 * 60 * 1000;
 // closes (a fresh register each shift), like the reprint entry.
 const PRINTED_FINGERPRINTS_KEY = "printedLabelFingerprints";
 const DUPLICATE_WINDOW_MS = 30 * 60 * 1000;
+const PRINTED_TODAY_SOURCES_KEY = "printedSourceFingerprintsToday";
 const LabelFeedback = window.LabelExtractorFeedback;
 const RuntimeHealth = window.LabelExtractorRuntimeHealth;
 const GrabRecovery = window.LabelExtractorGrabRecovery;
 const PrintQueueApi = window.LabelExtractorPrintQueue;
 const DuplicateGuard = window.LabelExtractorDuplicateGuard;
+const sourceFingerprintCache = new WeakMap();
 state.printQueue = PrintQueueApi.createPrintQueue({ maxItems: 10 });
 let labelLogWriteErrorCount = 0;
 const failureLogStore = LabelFeedback.createFailureLogStore({
@@ -1909,7 +1912,72 @@ function makeNibbleControls(index, label) {
   loosen.addEventListener("click", () => nibbleCrop(index, 1));
 
   group.append(tighten, loosen);
+
+  // Prototype (Approach A): structure-aware one-shot crop. Lab-only while we
+  // evaluate it on real labels so the proven staff flow is untouched.
+  if (state.uiMode === "lab" && window.LabelExtractorSmartFit) {
+    const smart = document.createElement("button");
+    smart.type = "button";
+    smart.className = "label-action label-action-nibble label-action-smartfit";
+    smart.textContent = "Smart fit";
+    smart.setAttribute("aria-label", "Smart fit crop to the barcode-anchored 4x6");
+    smart.title = "Prototype: snap the crop to the barcode-anchored 4x6 label";
+    smart.addEventListener("click", () => smartFitCrop(index));
+    group.append(smart);
+  }
+
   return group;
+}
+
+// Prototype (Approach A): build the 4x6 from the tracking barcode + content box
+// instead of nibbling all edges. Reuses the nibble baseline (source page +
+// base/content rects) so Reset still returns to the auto-crop. App-layer only.
+async function smartFitCrop(index) {
+  const current = state.results[index];
+  if (!current) return;
+
+  let nib = state.nibble;
+  if (!nib || nib.index !== index || nib.lastResult !== current) {
+    nib = await buildNibbleBaseline(index, current);
+    if (!nib) {
+      setStatus("Smart fit isn't available for this label - use Crop or Expand.");
+      return;
+    }
+    state.nibble = nib;
+  }
+
+  const barcodeRect = window.LabelExtractorSmartFit.barcodeBoxWithin(nib.source, nib.baseRect);
+  const rect = window.LabelExtractorSmartFit.smartFit4x6Rect({
+    sourceWidth: nib.source.width,
+    sourceHeight: nib.source.height,
+    baseRect: nib.baseRect,
+    contentRect: nib.tightRect,
+    barcodeRect
+  });
+  if (!rect || rect.width < 2 || rect.height < 2) {
+    setStatus("Smart fit couldn't find a label barcode here - try Tighten/Loosen or Crop.");
+    return;
+  }
+
+  const canvas = straightCropCanvas(nib.source, rect);
+  // Increment 2: turn the crop upright by its barcode band (self-correcting,
+  // no direction guess) before the standard orientation pass refines facing.
+  const uprightCanvas = window.LabelExtractorSmartFit.orientCanvasUpright(canvas);
+  const named = labelFromCanvas(uprightCanvas, nib.original, "Smart fit (4x6)");
+  named.sourceCanvas = null;
+  const [oriented] = await autoOrientLabel(named);
+
+  // Park the nibble at its baseline so a follow-up Tighten/Loosen recomputes
+  // from the auto-crop, and Reset (level 0) still restores the original.
+  nib.level = 0;
+  nib.lastResult = oriented;
+  state.results[index] = oriented;
+  state.selectedLabelIndex = index;
+  renderResults({ labels: state.results });
+  updateSheetPreview();
+  setStatus(barcodeRect
+    ? "Smart fit: cropped to the barcode-anchored 4x6."
+    : "Smart fit: no barcode found, fitted the content box to 4x6.");
 }
 
 async function nibbleCrop(index, direction) {
@@ -2195,6 +2263,7 @@ async function addLabelIndexesToQueue(indexes) {
   setStatus(`Preparing ${selected.length === 1 ? "label" : `${selected.length} labels`} for the queue...`, "loading");
   try {
     const sourceName = state.file?.name || "Label";
+    const sourceFingerprint = await fingerprintSourceFile(state.file);
     const prepared = [];
     for (const { index, label } of selected) {
       const rawUrl = labelToDataUrl(label);
@@ -2202,7 +2271,8 @@ async function addLabelIndexesToQueue(indexes) {
       const printUrl = await prepareForPrint(scaledUrl);
       prepared.push({
         printUrl,
-        name: `${sourceName} - ${resultDisplayName(label, index)}`
+        name: `${sourceName} - ${resultDisplayName(label, index)}`,
+        sourceFingerprint
       });
     }
     prepared.forEach((entry) => state.printQueue.add(entry));
@@ -2242,6 +2312,7 @@ async function printQueuedLabels() {
     return;
   }
   await recordPrintedFingerprints(fingerprints);
+  await recordPrintedSourcesToday(entries.map((entry) => entry.sourceFingerprint));
   await saveLastPrintedQueue(entries);
   const priorCount = state.labelsPrintedCount;
   state.labelsPrintedCount += entries.length;
@@ -2274,6 +2345,7 @@ async function printLabelAtIndex(index, options = {}) {
   state.selectedLabelIndex = index;
   updateSheetPreview();
   const displayName = resultDisplayName(label, index);
+  const sourceFingerprint = await fingerprintSourceFile(state.file);
   const rawUrl = labelToDataUrl(label);
   const scaledUrl = await resizeToLabelDpi(rawUrl, 203);
   const printUrl = await prepareForPrint(scaledUrl);
@@ -2294,6 +2366,7 @@ async function printLabelAtIndex(index, options = {}) {
     return false;
   }
   await recordPrintedFingerprints([fingerprint]);
+  await recordPrintedSourcesToday([sourceFingerprint]);
   await saveLastPrintedLabel(printUrl);
   state.labelsPrintedCount++;
   if (state.labelsPrintedCount % MEMORY_CLEANUP_EVERY === 0) {
@@ -2320,7 +2393,7 @@ function finishAfterPrint(name) {
   showBanner(
     `Print flow started for "${name}" and the panel was cleared — ready for the next label. Reprint stays available for 10 minutes.`,
     "success",
-    6000
+    3000
   );
   setStatus("Print flow started and panel cleared — ready for the next label.");
   scrollPanelToTop();
@@ -2341,6 +2414,151 @@ function reportPrintFailure(error) {
 // guards a print so staff confirm before sending a label that matches one
 // already printed in this window. The pure matching logic lives in
 // app/duplicate-guard.js; this layer only handles storage and the staff prompt.
+async function fingerprintSourceFile(file) {
+  if (!file || !DuplicateGuard) return null;
+  let pending = sourceFingerprintCache.get(file);
+  if (!pending) {
+    pending = file.arrayBuffer()
+      .then((buffer) => DuplicateGuard.fingerprintSourceBytes(new Uint8Array(buffer)))
+      .catch((error) => {
+        sourceFingerprintCache.delete(file);
+        console.warn("[Label Extractor] Could not fingerprint the source label.", error);
+        return null;
+      });
+    sourceFingerprintCache.set(file, pending);
+  }
+  return pending;
+}
+
+async function getPrintedSourcesToday() {
+  if (!chrome.storage?.local || !DuplicateGuard) return [];
+  try {
+    const data = await chrome.storage.local.get(PRINTED_TODAY_SOURCES_KEY);
+    return DuplicateGuard.pruneDailyHistory(data[PRINTED_TODAY_SOURCES_KEY] || []);
+  } catch (error) {
+    console.warn("[Label Extractor] Could not read today's printed-label history.", error);
+    return [];
+  }
+}
+
+async function recordPrintedSourcesToday(fingerprints) {
+  if (!chrome.storage?.local || !DuplicateGuard) return;
+  const valid = Array.from(fingerprints || []).filter((fingerprint) => fingerprint?.key);
+  if (!valid.length) return;
+  try {
+    let history = await getPrintedSourcesToday();
+    for (const fingerprint of valid) {
+      history = DuplicateGuard.recordPrintedToday(history, fingerprint);
+    }
+    await chrome.storage.local.set({ [PRINTED_TODAY_SOURCES_KEY]: history });
+  } catch (error) {
+    console.warn("[Label Extractor] Could not save today's printed-label history.", error);
+  }
+}
+
+async function confirmDownloadReplacement(incomingFile, incomingFingerprint) {
+  const hasCurrent = Boolean(state.file);
+  const [history, currentFingerprint] = await Promise.all([
+    getPrintedSourcesToday(),
+    hasCurrent ? fingerprintSourceFile(state.file) : Promise.resolve(null)
+  ]);
+  const currentPrint = DuplicateGuard.findPrintedToday(history, currentFingerprint);
+  const incomingPrint = DuplicateGuard.findPrintedToday(history, incomingFingerprint);
+  const assessment = DuplicateGuard.assessDownloadReplacement({
+    hasCurrent,
+    currentPrintedAt: currentPrint?.printedAt,
+    incomingPrintedAt: incomingPrint?.printedAt
+  });
+  if (!assessment.requiresConfirmation) return true;
+  return showDownloadReplacementDialog({
+    assessment,
+    currentFile: state.file,
+    incomingFile,
+    currentPrintedAt: currentPrint?.printedAt || 0,
+    incomingPrintedAt: incomingPrint?.printedAt || 0
+  });
+}
+
+function showDownloadReplacementDialog(details) {
+  return new Promise((resolve) => {
+    const returnFocus = document.activeElement;
+    const overlay = document.createElement("div");
+    overlay.className = "replacement-prompt";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "replacementPromptTitle");
+
+    const panel = document.createElement("div");
+    panel.className = "replacement-prompt-panel";
+    const title = document.createElement("h2");
+    title.id = "replacementPromptTitle";
+    title.textContent = details.currentFile ? "Replace current label?" : "Use a label printed today?";
+    const messages = document.createElement("div");
+    messages.className = "replacement-prompt-messages";
+
+    if (details.assessment.currentState === "unprinted") {
+      const warning = document.createElement("p");
+      warning.className = "replacement-prompt-warning";
+      warning.textContent = "The current label has not been printed. Replacing it could lose the customer's label.";
+      messages.append(warning);
+    } else if (details.assessment.currentState === "printed-today") {
+      const note = document.createElement("p");
+      note.textContent = `The current label was printed today at ${formatPrintedTime(details.currentPrintedAt)}.`;
+      messages.append(note);
+    }
+
+    if (details.assessment.incomingState === "printed-today") {
+      const warning = document.createElement("p");
+      warning.className = "replacement-prompt-warning";
+      warning.textContent = `This downloaded label was already printed today at ${formatPrintedTime(details.incomingPrintedAt)}.`;
+      messages.append(warning);
+    }
+
+    const incoming = document.createElement("p");
+    incoming.className = "replacement-prompt-file";
+    incoming.textContent = `New download: ${details.incomingFile?.name || "label"}`;
+    messages.append(incoming);
+
+    const actions = document.createElement("div");
+    actions.className = "replacement-prompt-actions";
+    const keep = document.createElement("button");
+    keep.type = "button";
+    keep.className = "secondary-button";
+    keep.textContent = details.currentFile ? "Keep current" : "Cancel";
+    const replace = document.createElement("button");
+    replace.type = "button";
+    replace.className = "primary-button";
+    replace.textContent = details.currentFile ? "Replace label" : "Use again";
+    actions.append(keep, replace);
+    panel.append(title, messages, actions);
+    overlay.append(panel);
+    document.body.append(overlay);
+
+    const finish = (approved) => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      overlay.remove();
+      if (returnFocus instanceof HTMLElement && returnFocus.isConnected) returnFocus.focus({ preventScroll: true });
+      resolve(approved);
+    };
+    const onKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      finish(false);
+    };
+    keep.addEventListener("click", () => finish(false), { once: true });
+    replace.addEventListener("click", () => finish(true), { once: true });
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) finish(false);
+    });
+    document.addEventListener("keydown", onKeyDown, true);
+    keep.focus({ preventScroll: true });
+  });
+}
+
+function formatPrintedTime(value) {
+  return new Date(Number(value)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
 async function getPrintedFingerprints() {
   if (!chrome.storage?.session || !DuplicateGuard) return [];
   try {

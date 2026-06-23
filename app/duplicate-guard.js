@@ -20,6 +20,7 @@
   // genuinely new same-tracking reship later in the shift is not flagged forever.
   const DEFAULT_WINDOW_MS = 30 * 60 * 1000;
   const DEFAULT_MAX_ENTRIES = 40;
+  const DEFAULT_DAILY_MAX_ENTRIES = 80;
   const MIN_TRACKING_LENGTH = 8;
 
   function normalizeTracking(value) {
@@ -41,6 +42,20 @@
     return `${(h >>> 0).toString(36)}:${len.toString(36)}`;
   }
 
+  function hashBytes(value) {
+    const bytes = value instanceof Uint8Array
+      ? value
+      : value instanceof ArrayBuffer
+        ? new Uint8Array(value)
+        : new Uint8Array(0);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < bytes.length; i++) {
+      h ^= bytes[i];
+      h = Math.imul(h, 0x01000193);
+    }
+    return `${(h >>> 0).toString(36)}:${bytes.length.toString(36)}`;
+  }
+
   // Build the duplicate fingerprint for a label + its print-ready data URL.
   function fingerprintLabel(label = {}, printUrl = "") {
     const tracking = normalizeTracking(label.trackingNumber);
@@ -49,6 +64,10 @@
       return { key: `trk:${tracking}`, kind: "tracking", tracking, name };
     }
     return { key: `img:${hashString(printUrl)}`, kind: "image", tracking: "", name };
+  }
+
+  function fingerprintSourceBytes(value) {
+    return { key: `src:${hashBytes(value)}`, kind: "source" };
   }
 
   function pruneHistory(history, options = {}) {
@@ -88,15 +107,66 @@
     return fresh.slice(-max);
   }
 
+  function startOfLocalDay(now = Date.now()) {
+    const date = new Date(Number(now));
+    date.setHours(0, 0, 0, 0);
+    return date.getTime();
+  }
+
+  function pruneDailyHistory(history, options = {}) {
+    const now = Number(options.now != null ? options.now : Date.now());
+    const dayStart = startOfLocalDay(now);
+    return (Array.isArray(history) ? history : []).filter((entry) => {
+      if (!entry || !entry.key) return false;
+      const printedAt = Number(entry.printedAt);
+      return Number.isFinite(printedAt) && printedAt >= dayStart && printedAt <= now;
+    });
+  }
+
+  function findPrintedToday(history, fingerprint, options = {}) {
+    if (!fingerprint?.key) return null;
+    return pruneDailyHistory(history, options).find((entry) => entry.key === fingerprint.key) || null;
+  }
+
+  function recordPrintedToday(history, fingerprint, options = {}) {
+    const fresh = pruneDailyHistory(history, options);
+    if (!fingerprint?.key) return fresh;
+    const now = Number(options.now != null ? options.now : Date.now());
+    const max = Math.max(1, Number(options.max != null ? options.max : DEFAULT_DAILY_MAX_ENTRIES));
+    return fresh
+      .filter((entry) => entry.key !== fingerprint.key)
+      .concat({ key: fingerprint.key, printedAt: now })
+      .slice(-max);
+  }
+
+  function assessDownloadReplacement(options = {}) {
+    const hasCurrent = options.hasCurrent === true;
+    const currentPrintedAt = Number(options.currentPrintedAt || 0);
+    const incomingPrintedAt = Number(options.incomingPrintedAt || 0);
+    return {
+      currentState: hasCurrent ? (currentPrintedAt > 0 ? "printed-today" : "unprinted") : "none",
+      incomingState: incomingPrintedAt > 0 ? "printed-today" : "new",
+      requiresConfirmation: hasCurrent || incomingPrintedAt > 0
+    };
+  }
+
   return {
     DEFAULT_WINDOW_MS,
     DEFAULT_MAX_ENTRIES,
+    DEFAULT_DAILY_MAX_ENTRIES,
     MIN_TRACKING_LENGTH,
     normalizeTracking,
     hashString,
+    hashBytes,
     fingerprintLabel,
+    fingerprintSourceBytes,
     pruneHistory,
     findDuplicate,
-    recordPrint
+    recordPrint,
+    startOfLocalDay,
+    pruneDailyHistory,
+    findPrintedToday,
+    recordPrintedToday,
+    assessDownloadReplacement
   };
 });
