@@ -16,6 +16,14 @@
   const ONLINE_RETURN_TOP_TRIM_RATIO = 0;
   const ONLINE_RETURN_BOTTOM_PAD_RATIO = 0.12;
   const BARCODE_EXCLUSION_PENALTY = -5;
+  const CUT_PANEL_MIN_LINE_SPAN_RATIO = 0.55;
+  const CUT_PANEL_MIN_BUCKET_COVERAGE = 0.42;
+  const CUT_PANEL_FRAME_BUCKET_COVERAGE = 0.85;
+  const CUT_PANEL_FRAME_DARK_RATIO = 0.11;
+  const CUT_PANEL_MIN_WIDTH_RATIO = 0.28;
+  const CUT_PANEL_MAX_WIDTH_RATIO = 0.58;
+  const CUT_PANEL_MAX_ASPECT_DISTANCE = 0.08;
+  const CUT_PANEL_CROSS_MARGIN_RATIO = 0.025;
 
   const {
     getCanvasData,
@@ -433,6 +441,127 @@
     return next;
   }
 
+  function clampRectToLeftCutPanel(rect, page) {
+    if (!rect || page?.type !== "pdf" || !page.canvas) return rect;
+    const canvas = page.canvas;
+    if (!(canvas.width > canvas.height * 1.25)) return rect;
+    const text = String(page.text || "").toUpperCase();
+    if (!(/\b(TRK#|TRACKING|SHIP DATE)\b/.test(text) && /\bRETURN/.test(text))) return rect;
+
+    const panel = findLeftCutPanel(canvas);
+    if (!panel) return rect;
+    const boundary = panel.x + panel.width;
+    const margin = Math.max(12, Math.round(Math.min(canvas.width, canvas.height) * CUT_PANEL_CROSS_MARGIN_RATIO));
+    if (!(rect.x < boundary - margin && rect.x + rect.width > boundary + margin)) return rect;
+    trace("cut-panel-clamp", {
+      from: [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)].join(","),
+      to: [Math.round(panel.x), Math.round(panel.y), Math.round(panel.width), Math.round(panel.height)].join(",")
+    });
+    return panel;
+  }
+
+  function findLeftCutPanel(canvas) {
+    const lines = longVerticalCutLines(canvas)
+      .filter((line) => line.covered >= 24 * CUT_PANEL_FRAME_BUCKET_COVERAGE
+        && line.avgDark >= canvas.height * CUT_PANEL_FRAME_DARK_RATIO)
+      .sort((a, b) => a.x - b.x);
+    if (lines.length < 2) return null;
+    let best = null;
+    for (let i = 0; i < lines.length - 1; i += 1) {
+      const left = lines[i];
+      const right = lines[i + 1];
+      const panelWidth = right.x - left.x;
+      if (panelWidth < canvas.width * CUT_PANEL_MIN_WIDTH_RATIO) continue;
+      if (panelWidth > canvas.width * CUT_PANEL_MAX_WIDTH_RATIO) continue;
+      if (left.x > canvas.width * 0.18) continue;
+      if (right.x < canvas.width * 0.32 || right.x > canvas.width * 0.62) continue;
+
+      const top = Math.min(left.top, right.top);
+      const bottom = Math.max(left.bottom, right.bottom);
+      const panelHeight = bottom - top;
+      if (panelHeight < canvas.height * CUT_PANEL_MIN_LINE_SPAN_RATIO) continue;
+      const aspectDistance = Math.min(
+        Math.abs(panelWidth / panelHeight - 2 / 3),
+        Math.abs(panelWidth / panelHeight - 1.5)
+      );
+      if (aspectDistance > CUT_PANEL_MAX_ASPECT_DISTANCE) continue;
+
+      const pad = Math.max(12, Math.round(Math.min(canvas.width, canvas.height) * 0.014));
+      const x = Math.max(0, left.x - pad);
+      const y = Math.max(0, top - pad);
+      const panel = {
+        x,
+        y,
+        width: Math.min(canvas.width - x, panelWidth + pad * 2),
+        height: Math.min(canvas.height - y, panelHeight + pad * 2),
+        aspectDistance
+      };
+      if (!best || panel.aspectDistance < best.aspectDistance) best = panel;
+    }
+    return best ? { x: best.x, y: best.y, width: best.width, height: best.height } : null;
+  }
+
+  function longVerticalCutLines(canvas) {
+    const data = getCanvasData(canvas);
+    const bucketCount = 24;
+    const bucketHeight = canvas.height / bucketCount;
+    const minBuckets = Math.ceil(bucketCount * CUT_PANEL_MIN_BUCKET_COVERAGE);
+    const columns = [];
+
+    for (let x = 0; x < canvas.width; x += 1) {
+      const buckets = new Uint8Array(bucketCount);
+      let dark = 0;
+      let top = canvas.height;
+      let bottom = 0;
+      for (let y = 0; y < canvas.height; y += 3) {
+        const i = (y * canvas.width + x) * 4;
+        if (data[i + 3] <= 16 || data[i] + data[i + 1] + data[i + 2] >= 210) continue;
+        dark += 1;
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+        buckets[Math.min(bucketCount - 1, Math.floor(y / bucketHeight))] = 1;
+      }
+      if (dark < canvas.height * 0.035) continue;
+      if (bottom - top < canvas.height * CUT_PANEL_MIN_LINE_SPAN_RATIO) continue;
+      let covered = 0;
+      for (let i = 0; i < bucketCount; i += 1) covered += buckets[i];
+      if (covered < minBuckets) continue;
+      columns.push({ x, top, bottom, dark, covered });
+    }
+
+    const grouped = [];
+    for (const column of columns) {
+      const prev = grouped[grouped.length - 1];
+      if (prev && column.x <= prev.right + 2) {
+        prev.right = column.x;
+        prev.top = Math.min(prev.top, column.top);
+        prev.bottom = Math.max(prev.bottom, column.bottom);
+        prev.dark += column.dark;
+        prev.covered = Math.max(prev.covered, column.covered);
+      } else {
+        grouped.push({
+          left: column.x,
+          right: column.x,
+          top: column.top,
+          bottom: column.bottom,
+          dark: column.dark,
+          covered: column.covered
+        });
+      }
+    }
+
+    return grouped
+      .map((line) => ({
+        x: Math.round((line.left + line.right) / 2),
+        top: line.top,
+        bottom: line.bottom,
+        avgDark: line.dark / Math.max(1, line.right - line.left + 1),
+        covered: line.covered,
+        score: line.dark + line.covered * 20
+      }))
+      .filter((line) => line.bottom - line.top >= canvas.height * CUT_PANEL_MIN_LINE_SPAN_RATIO);
+  }
+
   function autoCropPageCanvas(page, padding = 6) {
     return window.LabelExtractorCrop.autoCropCanvas(page.canvas, padding, cropOptionsForPage(page));
   }
@@ -525,6 +654,7 @@
         knownOnlineReturnForm ? borderRect : expandRectToClippedBarcodes(borderRect, page.canvas),
         page
       );
+      rect = clampRectToLeftCutPanel(rect, page);
       rect = clampImageChromeRect(page, rect);
       if (!knownOnlineReturnForm) {
         const fullPage = await fullPageLabelIfShaped(page, pages, rect);
@@ -580,7 +710,10 @@
     for (const page of pages) {
       const borderRect = detectSolidLabelBorder(page.canvas);
       if (!borderRect) continue;
-      const rect = clampImageChromeRect(page, clampRectAboveSlip(expandRectToClippedBarcodes(borderRect, page.canvas), page));
+      const rect = clampImageChromeRect(page, clampRectToLeftCutPanel(
+        clampRectAboveSlip(expandRectToClippedBarcodes(borderRect, page.canvas), page),
+        page
+      ));
 
       const fullPage = await fullPageLabelIfShaped(page, pages, rect);
       if (fullPage) { detections.push(fullPage); continue; }
