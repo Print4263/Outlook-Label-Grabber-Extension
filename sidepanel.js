@@ -2266,9 +2266,7 @@ async function addLabelIndexesToQueue(indexes) {
     const sourceFingerprint = await fingerprintSourceFile(state.file);
     const prepared = [];
     for (const { index, label } of selected) {
-      const rawUrl = labelToDataUrl(label);
-      const scaledUrl = await resizeToLabelDpi(rawUrl, 203);
-      const printUrl = await prepareForPrint(scaledUrl);
+      const printUrl = await preparedPrintDataUrl(label);
       prepared.push({
         printUrl,
         name: `${sourceName} - ${resultDisplayName(label, index)}`,
@@ -2346,9 +2344,13 @@ async function printLabelAtIndex(index, options = {}) {
   updateSheetPreview();
   const displayName = resultDisplayName(label, index);
   const sourceFingerprint = await fingerprintSourceFile(state.file);
-  const rawUrl = labelToDataUrl(label);
-  const scaledUrl = await resizeToLabelDpi(rawUrl, 203);
-  const printUrl = await prepareForPrint(scaledUrl);
+  let printUrl;
+  try {
+    printUrl = await preparedPrintDataUrl(label);
+  } catch (error) {
+    reportPrintFailure(error);
+    return false;
+  }
 
   // Duplicate-print protection: confirm before re-printing a label that matches
   // one already printed in this window (same tracking number, or the identical
@@ -2885,31 +2887,46 @@ function labelToDataUrl(label) {
   return `data:${label.outputMimeType || "image/png"};base64,${label.base64}`;
 }
 
+async function preparedPrintDataUrl(label) {
+  if (!label) return "";
+  const raw = labelToDataUrl(label);
+
+  // Cache keyed by the image itself: crop/rotate spread the prior label, so the
+  // base64 check prevents a new crop from reusing the old print artifact.
+  if (label._printPreparedUrl && label._printPreparedKey === label.base64) return label._printPreparedUrl;
+  if (label._printPreparedPromise && label._printPreparedKey === label.base64) return label._printPreparedPromise;
+
+  label._printPreparedKey = label.base64;
+  const pending = (async () => {
+    const scaled = await resizeToLabelDpi(raw, 203);
+    const prepared = await prepareForPrint(scaled);
+    label._printPreparedUrl = prepared;
+    return prepared;
+  })();
+  label._printPreparedPromise = pending;
+
+  try {
+    return await pending;
+  } catch (error) {
+    if (label._printPreparedPromise === pending) delete label._printPreparedPromise;
+    if (label._printPreparedKey === label.base64) delete label._printPreparedKey;
+    throw error;
+  }
+}
+
 // The on-screen preview must match what actually prints, so staff trust it and
-// don't needlessly Crop/Expand. Runs the label through the exact print pipeline
-// (white-trim + fill to 4x6 via resizeToLabelDpi, then prepareForPrint sharpen),
-// the same steps printLabelAtIndex uses. Cached on the label object so each one
-// is processed once; rotate/crop/expand create new label objects, so the cache
-// naturally invalidates.
+// don't needlessly Crop/Expand. Print and queue paths share this prepared image
+// too, avoiding repeated resize/sharpen/threshold work after preview renders.
 async function printPreviewDataUrl(label) {
   if (!label) return "";
   const raw = labelToDataUrl(label);
   if (label.outputMimeType === "application/pdf") return raw;
-  // Cache keyed by the image itself: crop/rotate spread the prior label (carrying
-  // _printPreviewUrl), so without comparing base64 a cropped label would keep
-  // showing the pre-crop preview.
-  if (label._printPreviewUrl && label._printPreviewKey === label.base64) return label._printPreviewUrl;
   try {
-    const scaled = await resizeToLabelDpi(raw, 203);
-    const prepared = await prepareForPrint(scaled);
-    label._printPreviewUrl = prepared;
-    label._printPreviewKey = label.base64;
-    return prepared;
+    return await preparedPrintDataUrl(label);
   } catch (_) {
     return raw;
   }
 }
-
 async function rotateLabel(label) {
   const image = await loadImage(labelToDataUrl(label));
   const canvas = document.createElement("canvas");
