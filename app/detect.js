@@ -494,9 +494,58 @@ function isFallbackOrPartialCrop(label) {
 }
 
 function compareLabelQuality(a, b) {
+  const shapePreference = thermalLabelShapePreference(a, b);
+  if (shapePreference) return shapePreference;
   const confidenceDelta = Number(b.confidence || 0) - Number(a.confidence || 0);
   if (Math.abs(confidenceDelta) > 0.03) return confidenceDelta;
   return localLabelScore(b) - localLabelScore(a);
+}
+
+const THERMAL_LABEL_EXACT_ASPECT_DISTANCE = 0.035;
+const THERMAL_LABEL_SHAPE_CONFIDENCE_FLOOR = 0.8;
+const THERMAL_LABEL_SHAPE_MAX_CONFIDENCE_GAP = 0.2;
+
+function thermalLabelShapePreference(a, b) {
+  if (shouldPreferThermalLabelShape(a, b)) return -1;
+  if (shouldPreferThermalLabelShape(b, a)) return 1;
+  return 0;
+}
+
+function shouldPreferThermalLabelShape(label, other) {
+  if (!label || !other) return false;
+  if (!isThermalLabelReason(label.localReason)) return false;
+  if (!isBorderReason(other.localReason)) return false;
+  if (other.carrierValidated || other.carrierConfident || other.trackingNumber) return false;
+  if (label.needsCrop || isFallbackOrPartialCrop(label) || hasCropWarning(label)) return false;
+  if (Number(label.confidence || 0) < THERMAL_LABEL_SHAPE_CONFIDENCE_FLOOR) return false;
+
+  const labelDistance = thermalLabelAspectDistance(label);
+  const otherDistance = thermalLabelAspectDistance(other);
+  if (labelDistance > THERMAL_LABEL_EXACT_ASPECT_DISTANCE) return false;
+  if (otherDistance <= THERMAL_LABEL_EXACT_ASPECT_DISTANCE) return false;
+
+  const confidenceGap = Number(other.confidence || 0) - Number(label.confidence || 0);
+  return confidenceGap <= THERMAL_LABEL_SHAPE_MAX_CONFIDENCE_GAP;
+}
+
+function isThermalLabelReason(reason) {
+  return reason === "solid-border"
+    || reason === "trained-model"
+    || reason === "label-shaped-page"
+    || reason === "embedded-image-label"
+    || reason === "embedded-usps-label";
+}
+
+function isBorderReason(reason) {
+  return reason === "dashed-border" || reason === "solid-border";
+}
+
+function thermalLabelAspectDistance(label) {
+  const width = Number(label?.width || 0);
+  const height = Number(label?.height || 0);
+  if (!width || !height) return Infinity;
+  const aspect = width / height;
+  return Math.min(Math.abs(aspect - 2 / 3), Math.abs(aspect - 1.5));
 }
 
 function localLabelScore(label) {

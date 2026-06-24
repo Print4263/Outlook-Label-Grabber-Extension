@@ -124,6 +124,35 @@ async function test(name, fn) {
     );
   });
 
+  await test("exact 4x6 label outranks a higher-confidence loose border sticker", async () => {
+    const hazmatSticker = {
+      variantName: "Dashed border label page 3",
+      sourcePage: 3,
+      pageCount: 3,
+      width: 877,
+      height: 1106,
+      localReason: "dashed-border",
+      confidence: 0.97,
+      carrier: "Model",
+      needsCrop: false
+    };
+    const realLabel = {
+      variantName: "Local label page 1",
+      sourcePage: 1,
+      pageCount: 3,
+      width: 888,
+      height: 1320,
+      localReason: "solid-border",
+      confidence: 0.884477724890019,
+      carrier: "Model",
+      needsCrop: false
+    };
+
+    const output = [hazmatSticker, realLabel].sort(context.compareLabelQuality);
+    assert.equal(output[0].variantName, realLabel.variantName);
+    assert.equal(output[1].variantName, hazmatSticker.variantName);
+  });
+
   console.log(`\nCandidate presentation tests PASS ${passed}/${passed}`);
 })().catch((error) => {
   console.error("Candidate presentation tests FAIL", error);
