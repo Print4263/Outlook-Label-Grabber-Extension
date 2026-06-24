@@ -65,8 +65,26 @@
     return score;
   }
 
+  function hazmatSafetyTextScore(text) {
+    const value = String(text || "").toUpperCase();
+    let score = 0;
+    if (/LITHIUM BATTERY SAFETY DOCUMENT/.test(value)) score += 2;
+    if (/LITHIUM (BATTERY|BATTERIES|ION|METAL)/.test(value)) score += 1;
+    if (/MUST NOT\s+BE SHIPPED BY AIR|FLAMMABILITY HAZARD|PACKING INSTRUCTION/.test(value)) score += 1;
+    if (/\bUN\s*348[01]\b/.test(value)) score += 0.5;
+    if (/PRINT THIS LABEL IN COLOR|ATTACHED ON A FLAT SURFACE/.test(value)) score += 1;
+    return score;
+  }
+
+  function hasShippingLabelCue(text) {
+    const value = String(text || "").toUpperCase();
+    return /SHIP TO|SHIP FROM|UPS GROUND|USPS TRACKING|FEDEX TRACKING|GROUND ADVANTAGE|PRIORITY MAIL|BILLING:|1 OF 1/.test(value);
+  }
+
   function isLikelyTextInstructionPage(page, reason) {
-    if (!page || reason === "solid-border" || reason === "trained-model" || reason === "embedded-label-page") return false;
+    if (!page || reason === "trained-model" || reason === "embedded-label-page") return false;
+    if (hazmatSafetyTextScore(page.text) >= 2 && !hasShippingLabelCue(page.text)) return true;
+    if (reason === "solid-border") return false;
     return instructionTextScore(page.text) >= 1 && !hasStrongLabelCue(page.text);
   }
 
