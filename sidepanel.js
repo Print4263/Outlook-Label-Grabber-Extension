@@ -1242,7 +1242,7 @@ function clearCurrentWork() {
   if (snapshot) offerUndoClear(snapshot);
 }
 
-const UNDO_CLEAR_WINDOW_MS = 30 * 1000;
+const UNDO_CLEAR_WINDOW_MS = 5 * 1000;
 
 function offerUndoClear(snapshot) {
   state.lastCleared = snapshot;
