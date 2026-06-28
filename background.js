@@ -11,6 +11,25 @@ const POPOUT_MAX_WIDTH = 760;
 const POPOUT_LAYOUT_STORAGE_KEY = "labelPopoutLayout";
 const SEND_TO_EXTRACTOR_MENU_ID = "send-to-label-extractor";
 const PENDING_CONTEXT_LABEL_KEY = "pendingContextLabel";
+// Transient customer-label blobs are held in storage.session (wiped on browser
+// close) rather than storage.local (persists across restarts as PII). A blob is
+// base64-encoded into the payload, so cap it well under the 10 MB session quota
+// (base64 inflates ~33%): 7 MB blob -> ~9.4 MB payload, leaving margin.
+const MAX_CONTEXT_LABEL_BYTES = 7 * 1024 * 1024;
+
+// storage.session is exposed only to trusted contexts by default. The drag-capture
+// content script (page-label-drag.js) and the Outlook reader write transient label
+// data there, so grant content-script (untrusted) access. Idempotent; safe to call
+// on install, startup, and worker spin-up.
+function exposeSessionStorageToContentScripts() {
+  try {
+    const result = chrome.storage.session.setAccessLevel?.({
+      accessLevel: "TRUSTED_AND_UNTRUSTED_CONTEXTS"
+    });
+    if (result?.catch) result.catch(() => {});
+  } catch (_) {}
+}
+exposeSessionStorageToContentScripts();
 let popoutWindowId = null;
 let popoutOpenPromise = null;
 let popoutLayoutSaveTimer = null;
@@ -199,7 +218,7 @@ async function findOutlookTab(preferredWindowId) {
     || outlookTabs[0];
 }
 
-async function grabOutlookLabelAttachment(sender) {
+async function grabOutlookLabelAttachment(sender, chosenFileName) {
   const tab = await findOutlookTab(sender?.tab?.windowId);
   if (!tab?.id) throw new Error("Open the label email in Outlook first.");
 
@@ -208,14 +227,19 @@ async function grabOutlookLabelAttachment(sender) {
     await chrome.tabs.update(tab.id, { active: true });
   } catch (_) {}
 
+  // chosenFileName (optional) tells the reader to grab a specific attachment when
+  // the email has several label-like ones; without it the reader returns the list
+  // to choose from (or auto-picks when there is only one strong candidate).
+  const payload = { type: "grab-outlook-label-attachment", chosenFileName: chosenFileName || "" };
+
   // The reader is normally already injected by the tabs.onUpdated listener, so
   // message it directly; only pay the executeScript round trip when there is no
   // listener yet (fresh tab, extension reloaded).
   try {
-    return await chrome.tabs.sendMessage(tab.id, { type: "grab-outlook-label-attachment" });
+    return await chrome.tabs.sendMessage(tab.id, payload);
   } catch (_) {
     await injectOutlookReader(tab.id);
-    return chrome.tabs.sendMessage(tab.id, { type: "grab-outlook-label-attachment" });
+    return chrome.tabs.sendMessage(tab.id, payload);
   }
 }
 
@@ -259,9 +283,12 @@ async function sendContextLabelToExtractor(info, tab) {
     pending = await resolveBlobContextLabel(info, tab, url);
   }
 
-  await chrome.storage.local.set({
+  await chrome.storage.session.set({
     [PENDING_CONTEXT_LABEL_KEY]: pending
   });
+  // A new intake supersedes a sibling dragged-label payload; dropping it keeps total
+  // session usage to one data URL, under the 10 MB quota.
+  if (pending.dataUrl) chrome.storage.session.remove("recentDraggedLabel").catch(() => {});
   await openOrPositionPopout(tab?.windowId);
 }
 
@@ -279,10 +306,11 @@ async function resolveBlobContextLabel(info, tab, url) {
     const frameId = Number.isInteger(info?.frameId) ? info.frameId : 0;
     const [result] = await chrome.scripting.executeScript({
       target: { tabId: tab.id, frameIds: [frameId] },
-      func: async (blobUrl, suggestedName) => {
+      func: async (blobUrl, suggestedName, maxBytes) => {
         const response = await fetch(blobUrl);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const blob = await response.blob();
+        if (blob.size > maxBytes) throw new Error("That label is too large to send. Download it first, then use Recent downloads.");
         const dataUrl = await new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve(reader.result);
@@ -297,7 +325,7 @@ async function resolveBlobContextLabel(info, tab, url) {
           createdAt: Date.now()
         };
       },
-      args: [url, filenameFromUrl(url)]
+      args: [url, filenameFromUrl(url), MAX_CONTEXT_LABEL_BYTES]
     });
     return result?.result || fallback;
   } catch (error) {
@@ -325,11 +353,12 @@ async function resolveDroppedBlobLabel(url) {
     try {
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id, allFrames: true },
-        func: async (blobUrl) => {
+        func: async (blobUrl, maxBytes) => {
           try {
             const response = await fetch(blobUrl);
             if (!response.ok) return null;
             const blob = await response.blob();
+            if (blob.size > maxBytes) return null;
             const dataUrl = await new Promise((resolve, reject) => {
               const reader = new FileReader();
               reader.onload = () => resolve(reader.result);
@@ -346,7 +375,7 @@ async function resolveDroppedBlobLabel(url) {
             return null;
           }
         },
-        args: [url]
+        args: [url, MAX_CONTEXT_LABEL_BYTES]
       });
       const hit = results.map((result) => result?.result).find((result) => result?.dataUrl);
       if (hit) return hit;
@@ -358,12 +387,16 @@ async function resolveDroppedBlobLabel(url) {
 
 chrome.runtime.onInstalled.addListener(() => {
   createContextMenus();
+  exposeSessionStorageToContentScripts();
   if (chrome.sidePanel?.setPanelBehavior) {
     chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   }
 });
 
-chrome.runtime.onStartup?.addListener(createContextMenus);
+chrome.runtime.onStartup?.addListener(() => {
+  createContextMenus();
+  exposeSessionStorageToContentScripts();
+});
 createContextMenus();
 
 chrome.contextMenus?.onClicked?.addListener((info, tab) => {
@@ -395,7 +428,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "grab-outlook-label-attachment") {
-    grabOutlookLabelAttachment(sender)
+    grabOutlookLabelAttachment(sender, message.chosenFileName)
       .then((response) => sendResponse(response?.ok ? response : {
         ok: false,
         message: response?.message || "No label attachment found in the current Outlook email."

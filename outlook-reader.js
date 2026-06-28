@@ -159,7 +159,7 @@ if (window.__labelExtractorOutlookReaderLoaded) {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== "grab-outlook-label-attachment") return false;
 
-    grabLikelyLabelAttachment()
+    grabLikelyLabelAttachment(message.chosenFileName)
       .then(sendResponse)
       .catch((error) => {
         sendResponse({ ok: false, message: error?.message || "Could not inspect Outlook attachments." });
@@ -172,6 +172,10 @@ if (window.__labelExtractorOutlookReaderLoaded) {
   const LABEL_GRAB_DEBUG = false;
   const GRAB_MAX_RETRIES = 3;
   const GRAB_RETRY_DELAY_MS = 400;
+  // A candidate at/above this score is "clearly label-like" (matched the label/carrier
+  // hint pattern, or a PDF with nearby label cues). Two or more of these in one email
+  // is genuine ambiguity worth a chooser; one strong + junk keeps the auto-pick.
+  const STRONG_ATTACHMENT_SCORE = 5;
   function grabLog(...args) {
     if (LABEL_GRAB_DEBUG) console.log("[Label Extractor][grab]", ...args);
   }
@@ -188,7 +192,7 @@ if (window.__labelExtractorOutlookReaderLoaded) {
   }
   // ------------------------------------------------------------------------
 
-  async function grabLikelyLabelAttachment() {
+  async function grabLikelyLabelAttachment(chosenFileName) {
     // The attachment chip may not have rendered yet (common in the Outlook PWA
     // right after the email opens). Re-scan a few times before giving up — this
     // is a read-only DOM query with no side effects, so retrying is safe.
@@ -208,8 +212,34 @@ if (window.__labelExtractorOutlookReaderLoaded) {
       return { ok: false, message: "No PDF or image attachment found in the current Outlook email." };
     }
 
-    const best = candidates[0];
-    grabLog("chosen best candidate el =", describeEl(best.element));
+    // Multiple-attachment chooser: when the email has 2+ clearly label-like
+    // attachments and the panel hasn't said which to grab, return the list instead
+    // of guessing. A single strong candidate (or one label next to junk) keeps the
+    // original auto-pick path untouched.
+    if (!chosenFileName) {
+      const strong = candidates.filter((candidate) => candidate.score >= STRONG_ATTACHMENT_SCORE);
+      if (strong.length >= 2) {
+        grabLog(`RESULT: ${strong.length} strong candidates — returning chooser.`);
+        return {
+          ok: true,
+          needsChoice: true,
+          choices: strong.slice(0, 5).map((candidate) => ({ fileName: candidate.fileName }))
+        };
+      }
+    }
+
+    // When staff explicitly chose a file, never substitute a different one: if it is
+    // gone (the chip re-rendered), report that rather than downloading the wrong label.
+    let best;
+    if (chosenFileName) {
+      best = candidates.find((candidate) => candidate.fileName === chosenFileName);
+      if (!best) {
+        return { ok: false, message: "That attachment is no longer listed - reopen the email and grab it again." };
+      }
+    } else {
+      best = candidates[0];
+    }
+    grabLog("chosen candidate el =", describeEl(best.element));
 
     const target = await findDownloadTarget(best.element);
     if (target) {

@@ -133,12 +133,26 @@
   async function getSession() {
     if (!sessionPromise) {
       window.ort.env.wasm.wasmPaths = assetUrl("lib/");
+      // Single-threaded WASM inference (~0.7s/page) is the floor and dominates
+      // multi-page extract time. The threaded WASM build (already shipped in
+      // lib/) needs SharedArrayBuffer, which exists only when the page is
+      // cross-origin isolated (manifest COOP/COEP). Where it isn't — including
+      // any context where isolation can't hold — numThreads stays 1, exactly
+      // today's behavior, so this can never regress a non-isolated page.
       const isolated = typeof crossOriginIsolated !== "undefined" && crossOriginIsolated;
       const cores = (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 1;
       window.ort.env.wasm.numThreads = isolated ? Math.min(4, Math.max(1, cores)) : 1;
+      // Reset the memoized promise if creation rejects, otherwise one transient
+      // load failure (e.g. WASM/model fetch hiccup) would permanently disable the
+      // model layer for the panel's lifetime — every later getSession() would keep
+      // returning the same rejected promise and never retry. Re-throw so callers
+      // (trainedModelDetection) still see this attempt fail and fall back.
       sessionPromise = window.ort.InferenceSession.create(assetUrl(MODEL_PATH), {
         executionProviders: ["wasm"],
         graphOptimizationLevel: "all"
+      }).catch((error) => {
+        sessionPromise = null;
+        throw error;
       });
     }
     return sessionPromise;

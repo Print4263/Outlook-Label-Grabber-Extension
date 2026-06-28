@@ -2,7 +2,11 @@
   "use strict";
 
   const RECENT_DRAGGED_LABEL_KEY = "recentDraggedLabel";
-  const MAX_DRAG_CAPTURE_BYTES = 35 * 1024 * 1024;
+  // The captured blob is base64-encoded into the payload and held in
+  // storage.session (10 MB quota). Cap the blob so the payload stays under it
+  // (base64 inflates ~33%): 7 MB -> ~9.4 MB. Larger drags fall back to the
+  // url-only payload, which the panel resolves via the background all-frames read.
+  const MAX_DRAG_CAPTURE_BYTES = 7 * 1024 * 1024;
   const RECENT_DRAGGED_LABEL_MAX_AGE_MS = 2 * 60 * 1000;
   let recentDragCleanupTimer = null;
 
@@ -38,7 +42,11 @@
       } catch (_) { /* keep url-only payload */ }
     }
 
-    await chrome.storage.local.set({ [RECENT_DRAGGED_LABEL_KEY]: payload });
+    await chrome.storage.session.set({ [RECENT_DRAGGED_LABEL_KEY]: payload });
+    // A large data-URL payload alongside a sibling pending-context label could exceed
+    // the 10 MB session quota; a new intake supersedes the other, so drop it when we
+    // just stored a big one. (Small url-only payloads can't blow the quota.)
+    if (payload.dataUrl) chrome.storage.session.remove("pendingContextLabel").catch(() => {});
     scheduleRecentDragCleanup(payload.captureId);
   }
 
@@ -46,9 +54,9 @@
     clearTimeout(recentDragCleanupTimer);
     recentDragCleanupTimer = setTimeout(async () => {
       try {
-        const data = await chrome.storage.local.get(RECENT_DRAGGED_LABEL_KEY);
+        const data = await chrome.storage.session.get(RECENT_DRAGGED_LABEL_KEY);
         if (data[RECENT_DRAGGED_LABEL_KEY]?.captureId === captureId) {
-          await chrome.storage.local.remove(RECENT_DRAGGED_LABEL_KEY);
+          await chrome.storage.session.remove(RECENT_DRAGGED_LABEL_KEY);
         }
       } catch (_) { /* best-effort expiry; the panel also removes stale entries */ }
     }, RECENT_DRAGGED_LABEL_MAX_AGE_MS);

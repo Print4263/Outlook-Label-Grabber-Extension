@@ -57,8 +57,8 @@ function localDetectionToLabel(result) {
     twinLabelCount: result.twinLabelCount || null,
     // Source-page mapping for the result-card Tighten/Loosen nibble: where this
     // crop sits within its rendered page, so the nibble can re-crop outward as
-    // well as inward. Additive metadata only - detection, ranking, candidate
-    // selection, and dedupe never read these fields.
+    // well as inward. Read by dedupeLabels (coarse position in the dedupe key);
+    // detection, ranking, and candidate selection do not read these fields.
     sourceRect: result.cropRect && Number(result.sourceWidth) && Number(result.sourceHeight)
       ? {
           x: Number(result.cropRect.x) || 0,
@@ -265,12 +265,19 @@ function missingPageFallbackScore(label) {
 function dedupeLabels(labels) {
   const seen = new Set();
   return labels.filter((label) => {
+    // Coarse crop position (16px grid) keeps two distinct same-size labels on one
+    // page from collapsing into one, while still deduping genuine repeats.
+    const rect = label.sourceRect;
+    const pos = rect
+      ? `${Math.round((Number(rect.x) || 0) / 16)},${Math.round((Number(rect.y) || 0) / 16)}`
+      : "";
     const key = [
       label.variantName || "",
       label.sourcePage || "",
       label.width || "",
       label.height || "",
-      label.localReason || ""
+      label.localReason || "",
+      pos
     ].join(":");
     if (seen.has(key)) return false;
     seen.add(key);

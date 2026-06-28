@@ -367,7 +367,7 @@ async function useDownloadedFile(download, options = {}) {
 async function processPendingContextLabel(pending) {
   if (!pending) return;
 
-  await chrome.storage.local.remove(PENDING_CONTEXT_LABEL_KEY).catch(() => {});
+  await chrome.storage.session.remove(PENDING_CONTEXT_LABEL_KEY).catch(() => {});
   if (pending.error && !pending.dataUrl) {
     setStatus(`Could not send label from page: ${pending.error}`, "error");
     return;

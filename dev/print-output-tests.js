@@ -58,7 +58,7 @@ test("queue print preview summary is excluded from paper", () => {
 
 test("multiple URLs use one combined print document", () => {
   let captured = "";
-  context.printHtmlDocument = (html) => { captured = html; };
+  context.printHtmlDocument = (html) => { captured = html; return true; };
   assert.equal(context.printQueueDataUrls(urls), true);
   assert.equal((captured.match(/data-print-label/g) || []).length, 3);
 });

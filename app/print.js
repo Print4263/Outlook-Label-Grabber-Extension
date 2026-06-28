@@ -178,31 +178,38 @@ async function prepareForPrint(dataUrl) {
   return canvas.toDataURL("image/png");
 }
 
+// Returns true if a print was successfully INITIATED (a print window opened or the
+// fallback iframe was attached). Returns false only if neither could be started
+// (e.g. popups blocked AND the iframe could not be created) so the caller can keep
+// the label loaded instead of recording a print that never happened.
 function printDataUrl(dataUrl) {
-  printHtmlDocument(makePrintHtml(dataUrl));
+  return printHtmlDocument(makePrintHtml(dataUrl));
 }
 
 function printQueueDataUrls(dataUrls) {
   const urls = Array.from(dataUrls || []).filter((url) => typeof url === "string" && url.startsWith("data:"));
   if (!urls.length) return false;
   if (urls.length === 1) {
-    printDataUrl(urls[0]);
-    return true;
+    return printDataUrl(urls[0]);
   }
-  printHtmlDocument(makeQueuePrintHtml(urls));
-  return true;
+  return printHtmlDocument(makeQueuePrintHtml(urls));
 }
 
 function printHtmlDocument(html) {
   const bounds = getPrintPopupBounds();
-  const printWindow = window.open("", "_blank", [
-    `width=${bounds.width}`,
-    `height=${bounds.height}`,
-    `left=${bounds.left}`,
-    `top=${bounds.top}`,
-    `screenX=${bounds.left}`,
-    `screenY=${bounds.top}`
-  ].join(","));
+  let printWindow = null;
+  try {
+    printWindow = window.open("", "_blank", [
+      `width=${bounds.width}`,
+      `height=${bounds.height}`,
+      `left=${bounds.left}`,
+      `top=${bounds.top}`,
+      `screenX=${bounds.left}`,
+      `screenY=${bounds.top}`
+    ].join(","));
+  } catch (_) {
+    printWindow = null;
+  }
 
   if (printWindow) {
     positionPrintWindow(printWindow, bounds);
@@ -210,38 +217,45 @@ function printHtmlDocument(html) {
     printWindow.document.write(html);
     printWindow.document.close();
     printWindowWhenReady(printWindow);
-    return;
+    return true;
   }
 
-  const frame = document.createElement("iframe");
-  frame.className = "print-frame";
-  frame.setAttribute("aria-hidden", "true");
+  // Popup blocked — fall back to a hidden print iframe. If even that cannot be
+  // attached, report failure so the caller keeps the label loaded.
+  try {
+    const frame = document.createElement("iframe");
+    frame.className = "print-frame";
+    frame.setAttribute("aria-hidden", "true");
 
-  let done = false;
-  const cleanup = () => {
-    if (done) return;
-    done = true;
-    frame.remove();
-  };
+    let done = false;
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      frame.remove();
+    };
 
-  frame.addEventListener("load", () => {
-    const win = frame.contentWindow;
-    if (!win) { cleanup(); return; }
-    whenPrintImagesReady(frame.contentDocument, () => {
-      try {
-        win.addEventListener("afterprint", () => setTimeout(cleanup, 250), { once: true });
-        win.focus();
-        win.print();
-      } catch (_) {
-        cleanup();
-        return;
-      }
-      setTimeout(cleanup, 120000);
-    });
-  }, { once: true });
+    frame.addEventListener("load", () => {
+      const win = frame.contentWindow;
+      if (!win) { cleanup(); return; }
+      whenPrintImagesReady(frame.contentDocument, () => {
+        try {
+          win.addEventListener("afterprint", () => setTimeout(cleanup, 250), { once: true });
+          win.focus();
+          win.print();
+        } catch (_) {
+          cleanup();
+          return;
+        }
+        setTimeout(cleanup, 120000);
+      });
+    }, { once: true });
 
-  document.body.append(frame);
-  frame.srcdoc = html;
+    document.body.append(frame);
+    frame.srcdoc = html;
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 function printWindowWhenReady(win) {

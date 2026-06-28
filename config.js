@@ -29,10 +29,26 @@ const LabelExtractorConfig = {
 // Let the studio / DevTools console flip the flags without editing this file:
 //   localStorage.setItem("LX_BARCODE", JSON.stringify({ ENRICH: true, RERANK: true }))
 // or set window.__LX_BARCODE = { ENRICH: true } before a run. Never throws.
-try {
-  const stored = globalThis.localStorage && JSON.parse(localStorage.getItem("LX_BARCODE") || "null");
-  if (stored && typeof stored === "object") Object.assign(LabelExtractorConfig.BARCODE, stored);
-} catch (_) {}
-if (globalThis.__LX_BARCODE && typeof globalThis.__LX_BARCODE === "object") {
-  Object.assign(LabelExtractorConfig.BARCODE, globalThis.__LX_BARCODE);
-}
+//
+// ENRICH is information-only and safe to override anywhere. RERANK can change WHICH
+// label is chosen, so a forgotten localStorage/window flag must not silently alter
+// the shipped side panel: a RERANK override is honored only in a dev context (the
+// Studio and dev/ harness pages), never in the production panel. To enable RERANK in
+// production, change the default above on purpose.
+(function applyBarcodeOverrides() {
+  const isDevContext = typeof location !== "undefined"
+    && /\/dev\//.test(location.pathname || "");
+
+  function applyOverride(override) {
+    if (!override || typeof override !== "object") return;
+    const safe = { ...override };
+    if (!isDevContext && "RERANK" in safe) delete safe.RERANK;
+    Object.assign(LabelExtractorConfig.BARCODE, safe);
+  }
+
+  try {
+    const stored = globalThis.localStorage && JSON.parse(localStorage.getItem("LX_BARCODE") || "null");
+    applyOverride(stored);
+  } catch (_) {}
+  applyOverride(globalThis.__LX_BARCODE);
+})();

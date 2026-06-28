@@ -828,7 +828,15 @@
     const seen = new Set();
     return candidates.filter((candidate) => {
       if (!candidate?.label) return false;
-      const key = `${candidate.reason}:${candidate.pageIndex}:${candidate.label.width}x${candidate.label.height}`;
+      // Include a COARSE crop position (16px grid) so two distinct same-size labels
+      // on one page with the same detector reason (e.g. a multi-up sheet) are not
+      // collapsed into one. Coarse so position jitter on a genuine duplicate still
+      // dedupes; distinct labels sit far apart and get separate keys.
+      const rect = candidate.cropRect;
+      const pos = rect
+        ? `${Math.round((Number(rect.x) || 0) / 16)},${Math.round((Number(rect.y) || 0) / 16)}`
+        : "";
+      const key = `${candidate.reason}:${candidate.pageIndex}:${candidate.label.width}x${candidate.label.height}:${pos}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;

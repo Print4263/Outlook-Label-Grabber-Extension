@@ -47,7 +47,9 @@ const state = {
   runtimeHealth: null,
   reprintHideTimer: null,
   printQueue: null,
-  queueBusy: false
+  queueBusy: false,
+  lastCleared: null,
+  undoToastTimer: null
 };
 
 const LOCAL_DETECTOR_REASONS = new Set([
@@ -98,6 +100,7 @@ const REVIEW_CLEAR_WARNING_DELAY_MS = 70000;
 const PENDING_CONTEXT_LABEL_KEY = "pendingContextLabel";
 const RECENT_DRAGGED_LABEL_KEY = "recentDraggedLabel";
 const RECENT_DRAGGED_LABEL_MAX_AGE_MS = 2 * 60 * 1000;
+const PENDING_CONTEXT_LABEL_MAX_AGE_MS = 5 * 60 * 1000;
 const LAST_PRINTED_LABEL_KEY = "lastPrintedLabel";
 const REPRINT_MAX_AGE_MS = 10 * 60 * 1000;
 // Recently-printed fingerprints for duplicate-print protection. Kept in
@@ -192,11 +195,14 @@ const els = {
 init();
 
 async function init() {
-  const saved = await chrome.storage.local.get([
-    "labelDownloadsClearedAt",
-    PENDING_CONTEXT_LABEL_KEY
+  // labelDownloadsClearedAt persists across restarts (storage.local); the pending
+  // context label is transient customer PII (storage.session, wiped on browser close).
+  const [saved, sessionSaved] = await Promise.all([
+    chrome.storage.local.get(["labelDownloadsClearedAt"]),
+    chrome.storage.session.get([PENDING_CONTEXT_LABEL_KEY]).catch(() => ({}))
   ]);
   state.downloadsClearedAt = Number(saved.labelDownloadsClearedAt || 0);
+  sweepStaleCustomerData();
   state.uiMode = "staff";
   initUiScale();
   updateSheetPreview();
@@ -209,7 +215,13 @@ async function init() {
   loadRecentDownloads();
   startDownloadsPolling();
   refreshReprintButton();
-  processPendingContextLabel(saved[PENDING_CONTEXT_LABEL_KEY]);
+  // Only auto-load a pending context label if it is still fresh. sweepStaleCustomerData()
+  // removes a stale one from storage, but this value was read before the sweep, so gate
+  // it here too — a >5 min old customer label must not auto-load for the next customer.
+  const freshPending = sessionSaved[PENDING_CONTEXT_LABEL_KEY];
+  if (freshPending && Date.now() - Number(freshPending.createdAt || 0) <= PENDING_CONTEXT_LABEL_MAX_AGE_MS) {
+    processPendingContextLabel(freshPending);
+  }
   // Warm the ONNX model shortly after the panel opens so the first ambiguous
   // label doesn't pay the full single-threaded load cost mid-workflow.
   scheduleModelWarmup();
@@ -231,7 +243,7 @@ function bindEvents() {
   els.popoutButton?.addEventListener("click", openPopoutWindow);
   els.resetLayoutButton?.addEventListener("click", resetSavedPopoutLayout);
   els.pickFile.addEventListener("click", () => els.fileInput.click());
-  els.grabOutlookAttachment?.addEventListener("click", grabOutlookAttachment);
+  els.grabOutlookAttachment?.addEventListener("click", () => grabOutlookAttachment());
   els.clearDownloads.addEventListener("click", clearRecentDownloadsList);
   els.refreshDownloads.addEventListener("click", () => loadRecentDownloads({ manual: true }));
   els.fileInput.addEventListener("change", () => setFile(els.fileInput.files?.[0] || null));
@@ -292,7 +304,7 @@ function bindEvents() {
   resetIdleScrollTimer();
 
   chrome.storage?.onChanged?.addListener((changes, areaName) => {
-    if (areaName !== "local") return;
+    if (areaName !== "session") return;
     const pending = changes[PENDING_CONTEXT_LABEL_KEY]?.newValue;
     if (pending) processPendingContextLabel(pending);
   });
@@ -709,7 +721,7 @@ async function resetSavedPopoutLayout() {
   }
 }
 
-async function grabOutlookAttachment() {
+async function grabOutlookAttachment(chosenFileName) {
   if (!chrome.runtime?.sendMessage) {
     setStatus("Outlook grab is not available here.", "error");
     return;
@@ -721,7 +733,19 @@ async function grabOutlookAttachment() {
 
   try {
     await beginGrabAttempt();
-    const response = await chrome.runtime.sendMessage({ type: "grab-outlook-label-attachment" });
+    const response = await chrome.runtime.sendMessage({ type: "grab-outlook-label-attachment", chosenFileName });
+
+    // Several label-like attachments and no choice yet — no download was clicked, so
+    // cancel this probe attempt and let staff pick which one to grab.
+    if (!chosenFileName && response?.needsChoice && Array.isArray(response.choices) && response.choices.length > 1) {
+      clearGrabAttemptTimers();
+      state.grabAttempt = null;
+      showAttachmentChooser(response.choices);
+      setStatus("More than one label attachment — choose which to download.");
+      if (button) button.disabled = false;
+      return;
+    }
+
     if (!response?.ok) throw new Error(response?.message || "No Outlook label attachment found.");
 
     state.grabAttempt = GrabRecovery.acceptAttempt(state.grabAttempt, {
@@ -743,6 +767,56 @@ async function grabOutlookAttachment() {
   } finally {
     if (button) button.disabled = false;
   }
+}
+
+function showAttachmentChooser(choices) {
+  document.getElementById("attachmentChooser")?.remove();
+
+  const overlay = document.createElement("div");
+  overlay.className = "replacement-prompt";
+  overlay.id = "attachmentChooser";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-label", "Choose which label to download");
+
+  const panel = document.createElement("div");
+  panel.className = "replacement-prompt-panel";
+  const title = document.createElement("h2");
+  title.textContent = "Which label?";
+  const note = document.createElement("p");
+  note.className = "replacement-prompt-file";
+  note.textContent = "This email has more than one label attachment. Choose the one to download.";
+
+  const list = document.createElement("div");
+  list.className = "attachment-chooser-list";
+  choices.forEach((choice) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "attachment-chooser-item";
+    item.textContent = choice.fileName || "label";
+    item.addEventListener("click", () => {
+      overlay.remove();
+      grabOutlookAttachment(choice.fileName);
+    });
+    list.append(item);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "replacement-prompt-actions";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "secondary-button";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => {
+    overlay.remove();
+    setStatus("Label grab cancelled — choose a download or use Outlook's Download button.");
+  });
+  actions.append(cancel);
+
+  panel.append(title, note, list, actions);
+  overlay.append(panel);
+  document.body.append(overlay);
+  list.querySelector("button")?.focus({ preventScroll: true });
 }
 
 async function beginGrabAttempt() {
@@ -1112,6 +1186,8 @@ function setFile(file) {
     return;
   }
 
+  // A valid new label supersedes a just-cleared one — only now is the undo moot.
+  dismissUndoClear();
   state.file = file;
   els.fileName.textContent = `${file.name} (${formatBytes(file.size)})`;
   els.extractButton.disabled = false;
@@ -1146,15 +1222,74 @@ function clearLoadedLabelState() {
 // --- Recent downloads + intake extracted to app/downloads.js ---
 
 function clearCurrentWork() {
+  // Snapshot the loaded label (in memory — same panel context, no serialization)
+  // so an accidental Clear can be undone for a short window. The objects survive
+  // clearLoadedLabelState because it reassigns state.results to a new array.
+  const hadWork = Boolean(state.file) || state.results.length > 0;
+  const snapshot = hadWork
+    ? { file: state.file, results: state.results, selectedLabelIndex: state.selectedLabelIndex }
+    : null;
   clearLoadedLabelState();
   state.clearMode = "idle";
   clearTimeout(state.inactivityTimer);
   state.inactivityTimer = null;
   resetFileSelection();
+  clearTransientIntakeData();
   setStatus("Cleared. Drop the next label file.");
   // Whether cleared by the auto-clear timer or the Clear button, reset the view
   // to the top so the next customer's label starts at a clean panel.
   scrollPanelToTop();
+  if (snapshot) offerUndoClear(snapshot);
+}
+
+const UNDO_CLEAR_WINDOW_MS = 30 * 1000;
+
+function offerUndoClear(snapshot) {
+  state.lastCleared = snapshot;
+  dismissUndoToast();
+  const toast = document.createElement("div");
+  toast.className = "undo-toast";
+  toast.id = "undoClearToast";
+  const text = document.createElement("span");
+  text.textContent = "Label cleared.";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "undo-toast-button";
+  button.textContent = "Undo";
+  button.addEventListener("click", restoreLastCleared);
+  toast.append(text, button);
+  document.body.append(toast);
+  clearTimeout(state.undoToastTimer);
+  state.undoToastTimer = setTimeout(dismissUndoClear, UNDO_CLEAR_WINDOW_MS);
+}
+
+function dismissUndoToast() {
+  document.getElementById("undoClearToast")?.remove();
+}
+
+function dismissUndoClear() {
+  clearTimeout(state.undoToastTimer);
+  state.undoToastTimer = null;
+  state.lastCleared = null;
+  dismissUndoToast();
+}
+
+function restoreLastCleared() {
+  const snap = state.lastCleared;
+  if (!snap) { dismissUndoClear(); return; }
+  dismissUndoClear();
+  state.file = snap.file;
+  state.results = snap.results;
+  state.selectedLabelIndex = snap.selectedLabelIndex;
+  if (snap.file) {
+    els.fileName.textContent = `${snap.file.name} (${formatBytes(snap.file.size)})`;
+    els.clearButton.disabled = false;
+    els.extractButton.disabled = false;
+  }
+  renderResults({ labels: state.results });
+  updateSheetPreview();
+  resetInactivityTimer();
+  setStatus("Restored the cleared label.");
 }
 
 function resetFileSelection() {
@@ -1253,19 +1388,51 @@ async function tryResolveDroppedBlobLabel(url) {
 
 async function recentDraggedLabelForUrl(url) {
   try {
-    const data = await chrome.storage.local.get(RECENT_DRAGGED_LABEL_KEY);
+    const data = await chrome.storage.session.get(RECENT_DRAGGED_LABEL_KEY);
     const recent = data[RECENT_DRAGGED_LABEL_KEY];
     if (!recent?.url && !recent?.dataUrl) return null;
     if (Date.now() - Number(recent.createdAt || 0) > RECENT_DRAGGED_LABEL_MAX_AGE_MS) {
-      await chrome.storage.local.remove(RECENT_DRAGGED_LABEL_KEY);
+      await chrome.storage.session.remove(RECENT_DRAGGED_LABEL_KEY);
       return null;
     }
     if (recent.url && url && recent.url !== url) return null;
-    await chrome.storage.local.remove(RECENT_DRAGGED_LABEL_KEY).catch(() => {});
+    await chrome.storage.session.remove(RECENT_DRAGGED_LABEL_KEY).catch(() => {});
     return recent;
   } catch (_) {
     return null;
   }
+}
+
+// Janitor: drop orphaned transient customer-label intake data so a later panel
+// session can't inherit it. Removes only STALE entries (past their max age) on
+// panel open; fresh in-flight intake is left intact for processing.
+async function sweepStaleCustomerData() {
+  try {
+    const data = await chrome.storage.session.get([
+      RECENT_DRAGGED_LABEL_KEY,
+      PENDING_CONTEXT_LABEL_KEY
+    ]);
+    const now = Date.now();
+    const stale = [];
+    const dragged = data[RECENT_DRAGGED_LABEL_KEY];
+    if (dragged && now - Number(dragged.createdAt || 0) > RECENT_DRAGGED_LABEL_MAX_AGE_MS) {
+      stale.push(RECENT_DRAGGED_LABEL_KEY);
+    }
+    const pending = data[PENDING_CONTEXT_LABEL_KEY];
+    if (pending && now - Number(pending.createdAt || 0) > PENDING_CONTEXT_LABEL_MAX_AGE_MS) {
+      stale.push(PENDING_CONTEXT_LABEL_KEY);
+    }
+    if (stale.length) await chrome.storage.session.remove(stale);
+  } catch (_) {}
+}
+
+// Next-customer hygiene: drop any transient intake blobs (a dragged label that
+// was never used, a pending context-menu label) so the next person starts clean.
+function clearTransientIntakeData() {
+  chrome.storage.session.remove([
+    RECENT_DRAGGED_LABEL_KEY,
+    PENDING_CONTEXT_LABEL_KEY
+  ]).catch(() => {});
 }
 
 function isSupportedFile(file) {
@@ -1458,6 +1625,16 @@ function renderResults(payload) {
     empty.className = "empty";
     empty.textContent = payload.warnings?.join(" ") || "No printable label found. Try the original PDF or image.";
     els.results.append(empty);
+    // Recovery action: when a file is loaded but detection found nothing, let staff
+    // open the full source page and crop the label by hand instead of dead-ending.
+    if (state.file && !state.extractionInProgress) {
+      const cropFromPage = document.createElement("button");
+      cropFromPage.type = "button";
+      cropFromPage.className = "empty-crop-button";
+      cropFromPage.textContent = "Crop from full page";
+      cropFromPage.addEventListener("click", () => expandToSourcePage());
+      els.results.append(cropFromPage);
+    }
     els.printSettings.classList.add("inactive");
     setManualTipVisible(true);
     document.body.classList.remove("has-results");
@@ -1708,8 +1885,30 @@ function makeMultiLabelNotice(labels, count) {
 }
 
 function visibleWarnings(label) {
-  if (state.uiMode === "lab") return label.warnings || [];
-  return (label.warnings || []).filter((warning) => !isTechnicalFallbackWarning(warning));
+  const base = state.uiMode === "lab"
+    ? (label.warnings || [])
+    : (label.warnings || []).filter((warning) => !isTechnicalFallbackWarning(warning));
+  const geometry = labelGeometryWarning(label);
+  return geometry ? [...base, geometry] : base;
+}
+
+// Conservative sanity check on the chosen crop so staff don't unknowingly print a
+// full page / packing slip or a tiny low-res crop on thermal stock. Display-only —
+// it never changes which label is selected, and the thresholds are deliberately
+// loose so a normal 4x6 (or a near-letter page) never trips it.
+function labelGeometryWarning(label) {
+  const width = Number(label?.width || 0);
+  const height = Number(label?.height || 0);
+  if (!width || !height) return null;
+  const aspect = width / height;
+  const aspectDistance = Math.min(Math.abs(aspect - 1.5), Math.abs(aspect - 2 / 3));
+  if (aspectDistance > 0.4) {
+    return "This crop isn't 4x6-shaped - check it's the label, not a full page or packing slip.";
+  }
+  if (Math.min(width, height) < 300) {
+    return "Low-resolution crop - the printed label may look soft.";
+  }
+  return null;
 }
 
 function isTechnicalFallbackWarning(warning) {
@@ -2306,7 +2505,9 @@ async function printQueuedLabels() {
     return;
   }
   if (!started) {
-    setStatus("Print queue is empty.", "error");
+    // The queue is non-empty here (checked above), so a falsy result means the
+    // print could not be started — keep the queue and surface the pop-up guidance.
+    reportPrintFailure(new Error("Print queue could not be started."));
     return;
   }
   await recordPrintedFingerprints(fingerprints);
@@ -2361,10 +2562,18 @@ async function printLabelAtIndex(index, options = {}) {
     return false;
   }
 
+  let printStarted = false;
   try {
-    printDataUrl(printUrl);
+    printStarted = printDataUrl(printUrl);
   } catch (error) {
     reportPrintFailure(error);
+    return false;
+  }
+  if (!printStarted) {
+    // Neither the print window nor the iframe fallback could start. Keep the label
+    // loaded (don't clear, don't record a print that never happened) so staff can
+    // fix pop-up blocking and print again from the still-loaded label.
+    reportPrintFailure(new Error("Print could not be started."));
     return false;
   }
   await recordPrintedFingerprints([fingerprint]);
@@ -2387,6 +2596,10 @@ async function printLabelAtIndex(index, options = {}) {
 // system dialog, so the wording stays honest. Reprint remains available for
 // REPRINT_MAX_AGE_MS. Used for single prints and the final label of a twin sheet.
 function finishAfterPrint(name) {
+  // A printed label is recovered via Reprint, not Undo — drop any pending undo
+  // and any transient intake blobs so the next customer starts clean.
+  dismissUndoClear();
+  clearTransientIntakeData();
   clearLoadedLabelState();
   clearTimeout(state.inactivityTimer);
   state.inactivityTimer = null;
@@ -2635,11 +2848,13 @@ function makeExpandButton(index, label) {
 }
 
 async function expandToSourcePage(index) {
-  const label = state.results[index];
-  if (!label || !state.file) {
+  if (!state.file) {
     setStatus("Expand unavailable — load a label file first.");
     return;
   }
+  // index may be out of range — the zero-candidate "crop from full page" recovery
+  // calls this with no result to expand. Fall back to a bare full-page crop.
+  const label = state.results[index] || null;
   if (state.extractionInProgress) {
     setStatus("Still extracting — wait for it to finish, then try Expand.");
     return;
@@ -2654,7 +2869,7 @@ async function expandToSourcePage(index) {
 
   try {
     const currentCacheKey = fileCacheKey(state.file);
-    const targetPageIndex = Math.max(0, (label.sourcePage || 1) - 1);
+    const targetPageIndex = Math.max(0, (label?.sourcePage || 1) - 1);
     let sourceCanvas = null;
     let sourcePageText = "";
 
@@ -2710,7 +2925,7 @@ async function expandToSourcePage(index) {
     );
     const dataUrl = sourceCanvas.toDataURL("image/png");
     const fullPageLabel = {
-      ...label,
+      ...(label || {}),
       base64: dataUrl.split(",")[1],
       outputMimeType: "image/png",
       width: sourceCanvas.width,
@@ -2840,8 +3055,19 @@ async function reprintLastLabel() {
     setStatus("No recent label to reprint - the last print has expired.");
     return;
   }
-  if (entry.printUrls?.length) printQueueDataUrls(entry.printUrls);
-  else printDataUrl(entry.printUrl);
+  let printStarted = false;
+  try {
+    printStarted = entry.printUrls?.length
+      ? printQueueDataUrls(entry.printUrls)
+      : printDataUrl(entry.printUrl);
+  } catch (error) {
+    reportPrintFailure(error);
+    return;
+  }
+  if (!printStarted) {
+    reportPrintFailure(new Error("Reprint could not be started."));
+    return;
+  }
   setStatus(`Reprinting "${entry.name}".`);
 }
 
@@ -2927,6 +3153,7 @@ async function printPreviewDataUrl(label) {
     return raw;
   }
 }
+
 async function rotateLabel(label) {
   const image = await loadImage(labelToDataUrl(label));
   const canvas = document.createElement("canvas");
